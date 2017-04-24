@@ -24,3 +24,21 @@ set_target_properties(
         CXX_STANDARD 14
         COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
 target_compile_definitions(client PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})
+
+add_executable(main2pc src/main_2pc.cc)
+target_link_libraries(main2pc ${RPCLIB_LIBS} pthread)
+set_target_properties(
+        main2pc
+        PROPERTIES
+        CXX_STANDARD 14
+        COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
+target_compile_definitions(main2pc PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})
+
+add_executable(central2pc src/central_2pc.cc)
+target_link_libraries(central2pc ${RPCLIB_LIBS} pthread)
+set_target_properties(
+        central2pc
+        PROPERTIES
+        CXX_STANDARD 14
+        COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
+target_compile_definitions(central2pc PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})

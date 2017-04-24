@@ -6,7 +6,7 @@ using namespace std;
 int main() {
   rpc::server srv(8080);
 
-  KeyValueStore<int> kv;
+  KeyValueStore<string, int> kv;
 
   srv.bind("get", [&kv](string key){ return kv.get(key); });
   srv.bind("put", [&kv](string key, int val){ kv.put(key, val); });

@@ -13,6 +13,9 @@
                 
  *********************************************************************************************/
 
+#ifndef CM_CIRCULAR_BUFFER
+#define CM_CIRCULAR_BUFFER
+
 template <class T>
 class CircularBuffer{
   T* buff_;
@@ -152,3 +155,5 @@ class CircularBuffer{
     return buff_[i];
   }
 };
+
+#endif

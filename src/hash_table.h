@@ -4,81 +4,35 @@
 
     Date: March 27, 2017
 
-    Description: A simple hash_table with string keys (using std::hash<std::string>{} as
-                 the hash function).
+    Description: A simple hash_table with arbitrary key types (using std::hash<KEY_TYPE>{} as
+                 the hash function). Therefore KEY_TYPE must be a type hashable with
+                 std::hash
 
  ******************************************************************************************/
-#include <string>
 #include <vector>
 #include <functional>
 
-template <class T>
+#ifndef CM_HASH_TABLE
+#define CM_HASH_TABLE
+
+template <class K, class V>
 class HashTable {
  public:
   /* Type of values for the hash_table */
   struct value_t{
-    value_t() : hash(0), key("") {}
-    value_t(size_t h, const std::string& k, const T& v) : hash(h), key(k), value(v) {}
+    value_t() : hash(0) {}
+    value_t(size_t h, const K& k, const V& v) : hash(h), key(k), value(v) {}
     size_t hash;
-    std::string key;
-    T value;
+    K key;
+    V value;
   };
 
-  /**********************************************************************
-                Iterator and Constant Iterator Types
-   **********************************************************************/
-  class const_iterator;
-  class iterator {
-    std::vector<value_t>* items_;
-    size_t index_;
-    size_t size_;
-    typename std::vector<value_t>::iterator it_;
-  public:
-    iterator(std::vector<value_t>* items, size_t index, size_t size, typename std::vector<value_t>::iterator it) : items_(items), index_(index), size_(size), it_(it) {}
-    iterator(const iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
-    iterator& operator++() {
-      if (index_ == size_) return *this;
-      if (++it_ != items_[index_].end()) return *this;
-      while (it_ == items_[index_].end() && (index_+1) != size_){
-	it_ = items_[++index_].begin();
-      }
-      if (it_ == items_[index_].end()) { index_ = size_; }
-      return *this;
-    }
-    iterator operator++(int) {
-      iterator tmp(*this); ++(*this); return tmp;
-    }
-    bool operator ==(const iterator& it) { return (items_ == it.items_) && (index_ == it.index_) && (it_ == it.it_); }
-    bool operator !=(const iterator& it) { return !((*this) == it); }
-    const T& operator*() const {return (*it_); }
-    T& operator*() { return (*it_).value; }
-    friend const_iterator;
-  };
-
-  class const_iterator {
-    std::vector<value_t>* items_;
-    size_t index_;
-    size_t size_;
-    typename std::vector<value_t>::const_iterator it_;
-  public:
-    const_iterator(std::vector<value_t>* items, size_t index, size_t size, typename std::vector<value_t>::const_iterator it) : items_(items), index_(index), size_(size), it_(it) {}
-    const_iterator(const const_iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
-    const_iterator(const iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
-    const_iterator& operator++() {
-      if (index_ == size_) return *this;
-      if (++it_ != items_[index_].end()) return *this;
-      while (it_ == items_[index].end() && (index_+1) != size_){
-	it_ = items_[++index_].begin();
-      }
-      if (it_ == items_[index_].end()) { index_ = size_; }
-      return *this;
-    }
-    const_iterator operator++(int) {
-      iterator tmp(*this); ++(*this); return tmp;
-    }
-    bool operator ==(const const_iterator& it) { return (items_ == it.items_) && (index_ == it.index_) && (it_ == it.it_); }
-    bool operator !=(const const_iterator& it) { return !((*this) == it); }
-    const T& operator*() const {return (*it_); }
+  /* Return Type of the find functionality */
+  struct find_t{
+    find_t() : found(false) {}
+    find_t(const V& v) : found(true), value(v) {}
+    bool found;
+    V value;
   };
 
   /************************************************************************
@@ -130,7 +84,7 @@ class HashTable {
   /*******************************************************************
               Insert, Remove, and Find operations
   ********************************************************************/
-  void insert(const std::string& key, const T& val){
+  void insert(const K& key, const V& val){
     if (size_*2 >= capacity_){
       resize();
     }
@@ -146,7 +100,7 @@ class HashTable {
     ++size_;
   }
 
-  void remove(const std::string& key){
+  void remove(const K& key){
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
@@ -158,51 +112,22 @@ class HashTable {
     }
   }
 
-  iterator find(const std::string& key){
+  find_t find(const K& key) const {
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
-    typename std::vector<value_t>::iterator it;
-    for (it = vals_[index].begin(); it != vals_[index].end(); ++it){
-      if (it->hash == hash && it->key == key){
-	return iterator(vals_, index, capacity_, it);
+    for (size_t i = 0; i < vals_[index].size(); ++i){
+      if (vals_[index][i].hash == hash && vals_[index][i].key == key){
+	return find_t(vals_[index][i].value);
       }
     }
-    return end();
-  }
-
-  const_iterator find(const std::string& key) const {
-    size_t hash = hash_func(key);
-    size_t index = hash%capacity_;
-    typename std::vector<value_t>::iterator it;
-    for (it = vals_[index].begin(); it != vals_[index].end(); ++it){
-      if (it->hash == hash && it->key == key){
-	return iterator(vals_, index, capacity_, it);
-      }
-    }
-    return end();
-  }
-
-  /********************************************************************
-      Iterators to the first element and end of the hash_table
-   ********************************************************************/
-  iterator begin() const {
-    for (size_t i = 0; i < capacity_; ++i){
-      if (vals_[i].size() != 0){
-	return iterator(vals_, i, capacity_, vals_[i].begin());
-      }
-    }
-    return end();
-  }
-
-  iterator end() const {
-    return iterator(vals_, capacity_, capacity_, vals_[capacity_-1].end());
+    return find_t();
   }
 
   /***********************************************************************
        Overloaded [] operators. These should only be used if the key is
        known to be in the hash_table. Otherwise use find.
    ***********************************************************************/
-  const T& operator[](const std::string& key) const {
+  const V& operator[](const K& key) const {
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
@@ -213,7 +138,7 @@ class HashTable {
     return ref_val_; /* bogus value */
   }
   
-  T& operator[](const std::string& key) {
+  V& operator[](const K& key) {
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
@@ -226,10 +151,10 @@ class HashTable {
 
  private:
   std::vector<value_t>* vals_;
-  T ref_val_;
+  V ref_val_;
   size_t capacity_;
   size_t size_;
-  std::hash<std::string> hash_func;
+  std::hash<K> hash_func;
 
   /* Functions used to resize the hash_table */
   bool is_prime(size_t n) const {
@@ -274,3 +199,5 @@ class HashTable {
     capacity_ = size;
   }
 };
+
+#endif

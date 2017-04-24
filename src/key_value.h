@@ -8,7 +8,10 @@
  ***********************************************************************************/
 #include "hash_table.h"
 
-template <class T>
+#ifndef CM_KEY_VALUE_STORE
+#define CM_KEY_VALUE_STORE
+
+template <class K, class V>
 class KeyValueStore{
  public:
   /*********************************************************
@@ -19,17 +22,27 @@ class KeyValueStore{
   /*********************************************************
      Key Value Semantics Operations
    *********************************************************/
-  T get(const std::string& key) {
+
+  /* KV find_t type is just the underlying hashtable find_t */
+  typedef typename HashTable<K, V>::find_t find_t;
+
+  find_t find(const K& key){
+    return kv_table_.find(key);
+  }
+  
+  V get(const K& key) {
     return kv_table_[key];
   }
 
-  void put(const std::string& key, const T& value){
+  void put(const K& key, const V& value){
     kv_table_.insert(key, value);
   }
 
-  void remove(const std::string& key){
+  void remove(const K& key){
     kv_table_.remove(key);
   }
  private:
-  HashTable<T> kv_table_;
+  HashTable<K, V> kv_table_;
 };
+
+#endif
