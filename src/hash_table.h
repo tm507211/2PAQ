@@ -101,6 +101,7 @@ class HashTable {
   }
 
   void remove(const K& key){
+    if (capacity_ == 0){ return; }
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
@@ -113,6 +114,7 @@ class HashTable {
   }
 
   find_t find(const K& key) const {
+    if (capacity_ == 0){ return find_t(); }
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
@@ -128,6 +130,7 @@ class HashTable {
        known to be in the hash_table. Otherwise use find.
    ***********************************************************************/
   const V& operator[](const K& key) const {
+    if (capacity_ == 0){ return ref_val_; }
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
@@ -139,6 +142,7 @@ class HashTable {
   }
   
   V& operator[](const K& key) {
+    if (capacity_ == 0){ return ref_val_; }
     size_t hash = hash_func(key);
     size_t index = hash%capacity_;
     for (size_t i = 0; i < vals_[index].size(); ++i){
