@@ -5,8 +5,9 @@ using namespace std;
 
 int main() {
   std::string ip_address;
-  cin >> ip_address;
-  rpc::client c(ip_address, 8080);
+  size_t port;
+  cin >> ip_address >> port;
+  rpc::client c(ip_address, port);
 
   std::string key;
   std::string action;
@@ -18,7 +19,7 @@ int main() {
     } else if (action == "get"){
       cout << "> " << key << " : " << c.call(action, key).as<int>() << endl;
     } else if (action == "remove"){
-      c.call(action);
+      c.call(action, key);
     } else {
       cerr << "invalid action: " << action << endl;
     }

@@ -23,7 +23,7 @@
 template <class T>
 class Server {
   rpc::server self_;                                     /* self */
-  std::vector<std::unique_ptr<rpc::client>> others_;     /* others[0] == Leader */
+  std::vector<rpc::client*> others_;                     /* others[0] == Leader */
   bool leader_;                                          /* Am I the Leader? */
   
   KeyValueStore<std::string, T> kv_;                     /* self's key value storage */
@@ -48,7 +48,7 @@ class Server {
     self_.bind("remove", [this](std::string key){ this->remove(key); });
     if (leader_){
       self_.bind("acknowledge", [this](size_t query){ this->acknowledge(query); });
-      self_.bind("join", [this](std::string address, size_t port = 8080){ others_.push_back(std::make_unique<rpc::client>(address, port)); });
+      self_.bind("join", [this](std::string address, size_t port = 8080){ this->others_.push_back(new rpc::client(address, port)); });
     } else {
       self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
       self_.bind("commit", [this](size_t query){ this->commit(query); });
@@ -72,8 +72,9 @@ class Server {
   void remove(const std::string& key){
     if (leader_){
       stage(key, T(), REMOVE, next_query_++);
+    } else {
+      others_[0]->send("remove", key);
     }
-    others_[0]->send("remove", key);
   }
 
   void acknowledge(size_t query){
@@ -82,7 +83,7 @@ class Server {
       commit(query);
     }
   }
-  
+
   void stage(const std::string& key, const T& val, Action act, size_t query){
     if (leader_){
       if (others_.size() == 0){
@@ -94,7 +95,7 @@ class Server {
 	    kv_.remove(key);
 	  break;
         }
-        return;
+	return;
       }
       queries_.insert(query, Query(key, val, act, others_.size()));
       for (size_t i = 0; i < others_.size(); ++i){
@@ -110,7 +111,7 @@ class Server {
   void commit(size_t query){
     Query q = queries_[query];
     queries_.remove(query);
-    switch (q.action){
+        switch (q.action){
       case PUT:
 	kv_.put(q.key, q.val);
         break;
@@ -130,6 +131,12 @@ class Server {
     register_funcs();
   }
 
+  ~Server(){
+    for (size_t i = 0; i < others_.size(); ++i){
+      delete others_[i];
+    }
+  }
+
   void run(std::string self_addr, size_t self_port, std::string address, size_t port){
     rpc::client client(address, port);
     std::pair<std::string, size_t> leader = client.call("leader", self_addr, self_port).as<std::pair<std::string, size_t>>();
@@ -137,7 +144,8 @@ class Server {
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
     } else {
-      others_.push_back(std::make_unique<rpc::client>(leader.first, leader.second));
+      others_.push_back(new rpc::client(leader.first, leader.second));
+      while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
       others_[0]->send("join", self_addr, self_port);
     }
   }
