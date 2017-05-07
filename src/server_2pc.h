@@ -13,6 +13,7 @@
 #include "hash_table.h"
 #include <vector>
 #include <string>
+#include <iostream>
 
 #ifndef CM_SERVER_2PC
 #define CM_SERVER_2PC
@@ -46,13 +47,10 @@ class Server {
     self_.bind("get", [this](std::string key){ return this->get(key); });
     self_.bind("put", [this](std::string key, T val){ this->put(key, val); });
     self_.bind("remove", [this](std::string key){ this->remove(key); });
-    if (leader_){
-      self_.bind("acknowledge", [this](size_t query){ this->acknowledge(query); });
-      self_.bind("join", [this](std::string address, size_t port = 8080){ this->others_.push_back(new rpc::client(address, port)); });
-    } else {
-      self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
-      self_.bind("commit", [this](size_t query){ this->commit(query); });
-    }
+    self_.bind("acknowledge", [this](size_t query){ this->acknowledge(query); });
+    self_.bind("join", [this](std::string address, size_t port = 8080){ this->join(address, port); });
+    self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
+    self_.bind("commit", [this](size_t query){ this->commit(query); });
   }
 
   T get(const std::string& key){
@@ -84,6 +82,10 @@ class Server {
     }
   }
 
+  void join(const std::string& addr, const size_t port){
+    others_.push_back(new rpc::client(address, port));
+  }
+
   void stage(const std::string& key, const T& val, Action act, size_t query){
     if (leader_){
       if (others_.size() == 0){
@@ -97,6 +99,7 @@ class Server {
         }
 	return;
       }
+      std::cout << "OTHERS" << std::endl;
       queries_.insert(query, Query(key, val, act, others_.size()));
       for (size_t i = 0; i < others_.size(); ++i){
         others_[i]->send("stage", key, val, act, query);

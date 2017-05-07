@@ -27,6 +27,63 @@ class HashTable {
     V value;
   };
 
+  /**********************************************************************
+                Iterator and Constant Iterator Types
+  **********************************************************************/
+  class const_iterator;
+  class iterator {
+    std::vector<value_t>* items_;
+    size_t index_;
+    size_t size_;
+    typename std::vector<value_t>::iterator it_;
+  public:
+    iterator(std::vector<value_t>* items, size_t index, size_t size, typename std::vector<value_t>::iterator it) : items_(items), index_(index), size_(size), it_(it) {}
+    iterator(const iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
+    iterator& operator++() {
+      if (index_ == size_) return *this;
+      if (++it_ != items_[index_].end()) return *this;
+      while (it_ == items_[index_].end() && (index_+1) != size_){
+	it_ = items_[++index_].begin();
+      }
+      if (it_ == items_[index_].end()) { index_ = size_; }
+      return *this;
+    }
+    iterator operator++(int) {
+      iterator tmp(*this); ++(*this); return tmp;
+    }
+    bool operator ==(const iterator& it) { return (items_ == it.items_) && (index_ == it.index_) && (it_ == it.it_); }
+    bool operator !=(const iterator& it) { return !((*this) == it); }
+    const V& operator*() const {return (*it_).value; }
+    V& operator*() { return (*it_).value; }
+    friend const_iterator;
+  };
+
+  class const_iterator {
+    std::vector<value_t>* items_;
+    size_t index_;
+    size_t size_;
+    typename std::vector<value_t>::const_iterator it_;
+  public:
+    const_iterator(std::vector<value_t>* items, size_t index, size_t size, typename std::vector<value_t>::const_iterator it) : items_(items), index_(index), size_(size), it_(it) {}
+    const_iterator(const const_iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
+    const_iterator(const iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
+    const_iterator& operator++() {
+      if (index_ == size_) return *this;
+      if (++it_ != items_[index_].end()) return *this;
+      while (it_ == items_[index].end() && (index_+1) != size_){
+	it_ = items_[++index_].begin();
+      }
+      if (it_ == items_[index_].end()) { index_ = size_; }
+      return *this;
+    }
+    const_iterator operator++(int) {
+      iterator tmp(*this); ++(*this); return tmp;
+    }
+    bool operator ==(const const_iterator& it) { return (items_ == it.items_) && (index_ == it.index_) && (it_ == it.it_); }
+    bool operator !=(const const_iterator& it) { return !((*this) == it); }
+    const V& operator*() const {return (*it_).value; }
+  };
+
   /* Return Type of the find functionality */
   struct find_t{
     find_t() : found(false) {}
@@ -125,6 +182,22 @@ class HashTable {
     return find_t();
   }
 
+  /***********************************************************************
+
+   ***********************************************************************/
+  iterator begin() const {
+    for (size_t i = 0; i < capacity_; ++i){
+      if (vals_[i].size() != 0){
+	return iterator(vals_, i, capacity_, vals_[i].begin());
+      }
+    }
+    return end();
+  }
+
+  iterator end() const {
+    return iterator(vals_, capacity_, capacity_, vals_[capacity_-1].end());
+  }
+  
   /***********************************************************************
        Overloaded [] operators. These should only be used if the key is
        known to be in the hash_table. Otherwise use find.
