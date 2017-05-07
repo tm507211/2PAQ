@@ -4,7 +4,7 @@
 
     Date:   April 22, 2017
 
-    Description: A simple implementation for Two Phase Commit Servers.
+    Description: A simple implementation for Two Phase Commit Servers with AQ.
     Commits all queries (doesn't ditch older queries after newer queries are committed)
  *************************************************************************************/
 
@@ -28,7 +28,6 @@ class Server {
   std::vector<rpc::client*> others_;     /* others[0] == Leader */
   bool leader_;                                          /* Am I the Leader? */
   
- // KeyValueStore<std::string, std::pair<CircularBuffer<T,size_t>> kv_;                     /* self's key value storage */
   KeyValueStore<std::string, std::pair< std::pair<T,size_t>,CircularBuffer<size_t> >> kv_;   		/*Latest committed value and list of pending queries (new versions) */
   
   typedef char Action;
@@ -52,7 +51,7 @@ class Server {
 
     self_.bind("acknowledge", [this](size_t query){ this->acknowledge(query); });
     self_.bind("join", [this](std::string address, size_t port = 8080){ this->others_.push_back( new rpc::client(address, port)); });
-    self_.bind("version", [this](std::string key){ return this->get_version(key);});
+    self_.bind("version", [this](std::string key){ return this->get_version(key);});			/*Leader gives version number*/
    
     self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
     self_.bind("commit", [this](size_t query){ this->commit(query); });
@@ -75,6 +74,7 @@ class Server {
     }
   }
 
+/* Checks if value is unique */
 bool isclean(const std::string& key){
     CircularBuffer<size_t> tmp_ver((kv_.get(key)).second); 
     if(tmp_ver.size()==0){
@@ -83,7 +83,7 @@ bool isclean(const std::string& key){
     return false;
   }
 
-
+/* Add new version to the circualr buffer */
 void add_version(const std::string& key, size_t query){
    CircularBuffer<size_t> new_ver((kv_.get(key)).second);
    new_ver.insert(query);
@@ -111,7 +111,7 @@ void acknowledge(size_t query){
       if (others_.size() == 0){
         switch(act){
           case PUT:
-    	    kv_.put(key, std::make_pair(std::make_pair(8,query), CircularBuffer<size_t>() )); 			//new value and empty list
+    	    kv_.put(key, std::make_pair(std::make_pair(val,query), CircularBuffer<size_t>() )); 			//new value and empty list
   	  break;
           case REMOVE:
 	    kv_.remove(key);
@@ -137,10 +137,10 @@ void acknowledge(size_t query){
     Query q = queries_[query];
     queries_.remove(query);
     CircularBuffer<size_t> tmp_ver((kv_.get(q.key)).second);
-    tmp_ver.remove_element(query);				
+    tmp_ver.remove_element(query);			//Removes from circular buffer				
     switch (q.action){
       case PUT:
-	kv_.put(q.key, std::make_pair(std::make_pair(q.val,query),tmp_ver)); 
+	kv_.put(q.key, std::make_pair(std::make_pair(q.val,query),tmp_ver));     //update latest commit value and query number 
         break;
       case REMOVE:
         if(tmp_ver.size()==0) kv_.remove(q.key);			//is this necessary?
@@ -156,10 +156,12 @@ void acknowledge(size_t query){
     }
   }
 
+/* Leader returns latest committed version number */
 size_t get_version(const std::string& key){
       	return ((kv_.get(key)).first).second;
 }  
 
+/* Value of the given version/query */
 T get_val(size_t query){
    Query q = queries_[query];
    switch(q.action){
