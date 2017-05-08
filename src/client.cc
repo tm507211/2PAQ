@@ -20,6 +20,8 @@ int main() {
       cout << "> " << key << " : " << c.call(action, key).as<int>() << endl;
     } else if (action == "remove"){
       c.call(action, key);
+    } else if (action == "GET"){
+      cout << "> " << key << " : " << c.call(action, key).as<int>() << endl;
     } else {
       cerr << "invalid action: " << action << endl;
     }

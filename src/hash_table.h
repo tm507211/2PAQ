@@ -37,6 +37,7 @@ class HashTable {
     size_t size_;
     typename std::vector<value_t>::iterator it_;
   public:
+    iterator() : items_(NULL), index_(0), size_(0) {}
     iterator(std::vector<value_t>* items, size_t index, size_t size, typename std::vector<value_t>::iterator it) : items_(items), index_(index), size_(size), it_(it) {}
     iterator(const iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
     iterator& operator++() {
@@ -53,8 +54,8 @@ class HashTable {
     }
     bool operator ==(const iterator& it) { return (items_ == it.items_) && (index_ == it.index_) && (it_ == it.it_); }
     bool operator !=(const iterator& it) { return !((*this) == it); }
-    const V& operator*() const {return (*it_).value; }
-    V& operator*() { return (*it_).value; }
+    const value_t& operator*() const {return (*it_); }
+    value_t& operator*() { return (*it_); }
     friend const_iterator;
   };
 
@@ -64,6 +65,7 @@ class HashTable {
     size_t size_;
     typename std::vector<value_t>::const_iterator it_;
   public:
+    const_iterator() : items_(NULL), index_(0), size_(0) {}
     const_iterator(std::vector<value_t>* items, size_t index, size_t size, typename std::vector<value_t>::const_iterator it) : items_(items), index_(index), size_(size), it_(it) {}
     const_iterator(const const_iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
     const_iterator(const iterator& it) : items_(it.items_), index_(it.index_), size_(it.size_), it_(it.it_) {}
@@ -81,7 +83,7 @@ class HashTable {
     }
     bool operator ==(const const_iterator& it) { return (items_ == it.items_) && (index_ == it.index_) && (it_ == it.it_); }
     bool operator !=(const const_iterator& it) { return !((*this) == it); }
-    const V& operator*() const {return (*it_).value; }
+    const value_t& operator*() const {return (*it_); }
   };
 
   /* Return Type of the find functionality */

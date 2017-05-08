@@ -25,6 +25,7 @@ class KeyValueStore{
 
   /* KV find_t type is just the underlying hashtable find_t */
   typedef typename HashTable<K, V>::find_t find_t;
+  typedef typename HashTable<K, V>::value_t value_t;
   typedef typename HashTable<K, V>::iterator iterator;
   typedef typename HashTable<K, V>::const_iterator const_iterator;
 

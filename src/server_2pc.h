@@ -26,6 +26,7 @@ class Server {
   rpc::server self_;                                     /* self */
   std::vector<rpc::client*> others_;                     /* others[0] == Leader */
   bool leader_;                                          /* Am I the Leader? */
+  bool ready_;
   
   KeyValueStore<std::string, T> kv_;                     /* self's key value storage */
 
@@ -51,6 +52,8 @@ class Server {
     self_.bind("join", [this](std::string address, size_t port = 8080){ this->join(address, port); });
     self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
     self_.bind("commit", [this](size_t query){ this->commit(query); });
+    self_.bind("set", [this](std::string key, T val){ std::cout << "SET " << key << " : " << val << std::endl; this->kv_.put(key, val); });
+    self_.bind("GET", [this](std::string key){ return this->kv_.get(key); });
   }
 
   T get(const std::string& key){
@@ -83,7 +86,13 @@ class Server {
   }
 
   void join(const std::string& addr, const size_t port){
-    others_.push_back(new rpc::client(address, port));
+    size_t ind = others_.size();
+    others_.push_back(new rpc::client(addr, port));
+    while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
+    typename KeyValueStore<std::string,T>::iterator it;
+    for (it = kv_.begin(); it != kv_.end(); ++it){
+      others_[ind]->send("set", (*it).key, (*it).value);
+    }
   }
 
   void stage(const std::string& key, const T& val, Action act, size_t query){
@@ -130,7 +139,7 @@ class Server {
   }
   
  public:
-  Server(size_t port=8080) : self_(port), leader_(false), next_query_(0) {
+ Server(size_t port=8080) : self_(port), leader_(false), ready_(false), next_query_(0) {
     register_funcs();
   }
 
@@ -146,6 +155,7 @@ class Server {
     self_.async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
+      ready_ = true;
     } else {
       others_.push_back(new rpc::client(leader.first, leader.second));
       while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
