@@ -15,29 +15,38 @@
 #include "circular_buffer.h"
 #include <vector>
 #include <string>
+#include <mutex>
+#include <thread>
+#include <iostream>
 
-#ifndef CM_SERVER_2PC
-#define CM_SERVER_2PC
+#ifndef CM_SERVER_2PC_AQ
+#define CM_SERVER_2PC_AQ
 
 #define PUT 0
 #define REMOVE 1
+
+std::mutex mtx_lead;
 
 template <class T>
 class Server {
   rpc::server self_;                                     /* self */
   std::vector<rpc::client*> others_;     /* others[0] == Leader */
   bool leader_;                                          /* Am I the Leader? */
-  
+  bool pulse_;
+  size_t id_;
+  std::vector<bool> alive_others_;			/*Are others alive? */
+
   KeyValueStore<std::string, std::pair< std::pair<T,size_t>,CircularBuffer<size_t> >> kv_;   		/*Latest committed value and list of pending queries (new versions) */
   
   typedef char Action;
 
   struct Query{
     Query() {}
-    Query(const std::string& k, const T& val, Action act, size_t a = 0) : key(k), val(val), action(act), acks(a) {}
+    Query(const std::string& k, const T& val, Action act, size_t a = 0, std::vector<bool> a_v ={true}) : key(k), val(val), action(act), acks(a), ack_vec(a_v) {}
     std::string key;
     T val;
     Action action;
+    std::vector<bool> ack_vec;
     size_t acks;    /* If acks == 0 then ready to commit */
   };
 
@@ -49,12 +58,14 @@ class Server {
     self_.bind("put", [this](std::string key, T val){ this->put(key, val); });
     self_.bind("remove", [this](std::string key){ this->remove(key); });
 
-    self_.bind("acknowledge", [this](size_t query){ this->acknowledge(query); });
-    self_.bind("join", [this](std::string address, size_t port = 8080){ this->others_.push_back( new rpc::client(address, port)); });
+    self_.bind("acknowledge", [this](size_t query, size_t id_no){ this->acknowledge(query,id_no); });
+    self_.bind("join", [this](std::string address, size_t port = 8080){ this->others_.push_back( new rpc::client(address, port)); this->alive_others_.push_back(true); });
     self_.bind("version", [this](std::string key){ return this->get_version(key);});			/*Leader gives version number*/
-   
-    self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
+    self_.bind("alive", [this](size_t id_no){ (this->alive_others_[id_no]) = true; }) ;              /*Alive children*/
+
+    self_.bind("stage", [this](std::string key, T val, Action act, size_t query, size_t id_no = 0){ this->stage(key, val, act, query, id_no); });
     self_.bind("commit", [this](size_t query){ this->commit(query); });
+    self_.bind("hello",  [this](size_t id_no){this->pulse_ = true; this->id_ = id_no; this->holler_back();}); 			/*still connected to leader*/
   }
 
 //Check if clean else ask leader for version number
@@ -99,14 +110,17 @@ void remove(const std::string& key){
     }
   }
 
-void acknowledge(size_t query){
-    --queries_[query].acks;
+void acknowledge(size_t query, size_t id_no){
+    if(!(queries_[query].ack_vec)[id_no]){                //no double counting
+       --queries_[query].acks;
+       (queries_[query].ack_vec)[id_no] = true;          //keep track of who acknowledges
+    }
     if (queries_[query].acks == 0){
       commit(query);
     }
   }
   
- void stage(const std::string& key, const T& val, Action act, size_t query){
+ void stage(const std::string& key, const T& val, Action act, size_t query, size_t id_no =0){
     if (leader_){
       if (others_.size() == 0){
         switch(act){
@@ -119,16 +133,16 @@ void acknowledge(size_t query){
         }
         return;
       }
-      queries_.insert(query, Query(key, val, act, others_.size()));
+      queries_.insert(query, Query(key, val, act, others_.size(),std::vector<bool>(others_.size()) ));
       add_version(key,query);			
       for (size_t i = 0; i < others_.size(); ++i){
-        others_[i]->send("stage", key, val, act, query);
+        others_[i]->send("stage", key, val, act, query, i);
       }
     }
     else {
       queries_.insert(query, Query(key, val, act));
       add_version(key,query);				
-      others_[0]->send("acknowledge", query);
+      others_[0]->send("acknowledge", query, id_no);
     }
   }
 
@@ -173,6 +187,35 @@ T get_val(size_t query){
    return T();
 }
 
+void hello_world()
+{
+  for(size_t i=0; i< others_.size(); ++i){
+    alive_others_[i]=false;
+    others_[i]->send("hello",i);
+  }
+}
+
+void holler_back(){
+  pulse_=false;
+  others_[0]->send("alive",id_);
+}
+
+/*
+void kill(size_t id_no){
+  typename HashTable<size_t, Query>::iterator qit;
+ // alive_others_.erase(alive_others_.begin() + id_no);
+ // others_.erase(others_.begin() +id_no);
+  for (qit = queries_.begin(); qit != queries_.end(); ++qit){
+      if(((*qit).value.ack_vec)[id_no] == false){
+        // --(*qit).value.acks;
+         acknowledge((*qit).key,id_no);             //not sorted by query no.
+        //self_c.send("acknowledge",id_no);   //this will ensure that too many things don't happen in the locked thread
+      }
+     // ((*qit).value.ack_vec).erase(id_no);                   //do I need this?
+  }
+}
+*/
+
  public:
   Server(size_t port=8080) : self_(port), leader_(false), next_query_(0) {
     register_funcs();
@@ -185,15 +228,44 @@ T get_val(size_t query){
 
   void run(std::string self_addr, size_t self_port, std::string address, size_t port){
     rpc::client client(address, port);
+    //rpc::client self_c(self_addr,self_port);
     std::pair<std::string, size_t> leader = client.call("leader", self_addr, self_port).as<std::pair<std::string, size_t>>();
+    typename HashTable<size_t, Query>::iterator qit;
     self_.async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
-    } else {
+       while(1){
+        hello_world();
+        std::this_thread::sleep_for (std::chrono::milliseconds(10));
+        mtx_lead.lock();
+        for(size_t i=0; i<others_.size();i++){
+           if(!alive_others_[i]){
+             for (qit = queries_.begin(); qit != queries_.end(); ++qit){
+                 if( ((*qit).value.ack_vec)[i] == false ){
+                    acknowledge((*qit).key,i);             //send acknowledgement on behalf of dead nodes (not sorted by query no.)
+                    //self_c.send("acknowledge",i);   //this will ensure that too many things don't happen in the locked thread
+                 }  
+               }
+           }     
+        }
+        size_t i=0;
+        while(i<others_.size()){
+           if(alive_others_[i]){
+              i++;
+              continue;
+           }
+           alive_others_.erase(alive_others_.begin() + i);
+           others_.erase(others_.begin() +i);   /*Remove dead nodes*/
+        }
+           
+        mtx_lead.unlock();
+       }
+     } else {
       others_.push_back(new rpc::client(leader.first, leader.second));
       while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
       others_[0]->send("join", self_addr, self_port);
-    }
+      //holler_back();
+      }
   }
 };
 
