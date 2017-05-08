@@ -85,10 +85,22 @@ class Server {
     }
   }
 
+  /* This relies on the fact that only 1 thread is executing the server calls
+     -- Otherwise a query in progress could cause a lot of issues */
   void join(const std::string& addr, const size_t port){
     size_t ind = others_.size();
     others_.push_back(new rpc::client(addr, port));
     while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
+    queries_.begin();
+
+    /* Send all of the in progress queries */
+    typename HashTable<size_t, Query>::iterator qit;
+    for (qit = queries_.begin(); qit != queries_.end(); ++qit){
+      ++(*qit).value.acks;
+      others_[ind]->send("stage", (*qit).value.key, (*qit).value.val, (*qit).value.action, (*qit).key);
+    }
+
+    /* Send all commited data */
     typename KeyValueStore<std::string,T>::iterator it;
     for (it = kv_.begin(); it != kv_.end(); ++it){
       others_[ind]->send("set", (*it).key, (*it).value);
@@ -108,7 +120,6 @@ class Server {
         }
 	return;
       }
-      std::cout << "OTHERS" << std::endl;
       queries_.insert(query, Query(key, val, act, others_.size()));
       for (size_t i = 0; i < others_.size(); ++i){
         others_[i]->send("stage", key, val, act, query);
