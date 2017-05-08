@@ -197,6 +197,9 @@ class HashTable {
   }
 
   iterator end() const {
+    if (capacity_ == 0) {
+      return iterator(vals_, capacity_, capacity_, std::vector<value_t>().end());
+    }
     return iterator(vals_, capacity_, capacity_, vals_[capacity_-1].end());
   }
   
