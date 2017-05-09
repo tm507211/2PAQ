@@ -121,6 +121,8 @@ void acknowledge(size_t query, size_t id_no){
   }
   
  void stage(const std::string& key, const T& val, Action act, size_t query, size_t id_no =0){
+    if( ((kv_.get(key)).first).second > query ) 								 	//never stage a version older than the committed version
+      return;
     if (leader_){
       if (others_.size() == 0){
         switch(act){
@@ -151,7 +153,9 @@ void acknowledge(size_t query, size_t id_no){
     Query q = queries_[query];
     queries_.remove(query);
     CircularBuffer<size_t> tmp_ver((kv_.get(q.key)).second);
-    tmp_ver.remove_element(query);			//Removes from circular buffer				
+    tmp_ver.remove_smaller(query);						//Removes all earlier queries to the same key from circular buffer
+    if(((kv_.get(q.key)).first).second > query)         			//Assumes all later queries have higher number				
+      return;  									//never commit an older version
     switch (q.action){
       case PUT:
 	kv_.put(q.key, std::make_pair(std::make_pair(q.val,query),tmp_ver));     //update latest commit value and query number 
@@ -234,7 +238,7 @@ void kill(size_t id_no){
     self_.async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
-       while(1){
+      while(1){
         hello_world();
         std::this_thread::sleep_for (std::chrono::milliseconds(10));
         mtx_lead.lock();
@@ -255,11 +259,11 @@ void kill(size_t id_no){
               continue;
            }
            alive_others_.erase(alive_others_.begin() + i);
-           others_.erase(others_.begin() +i);   /*Remove dead nodes*/
+           others_.erase(others_.begin() +i);   // Remove dead nodes 
         }
            
         mtx_lead.unlock();
-       }
+       } 
      } else {
       others_.push_back(new rpc::client(leader.first, leader.second));
       while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);

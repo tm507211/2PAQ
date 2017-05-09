@@ -129,6 +129,15 @@ class CircularBuffer{
     for (; index < size_ && (val != (*this)[index]); ++index);
     remove(index); /* does nothing if val is not found in buff_ */
   }
+  
+  /* Removes all items smaller than or equal to val */
+  void remove_smaller(const T& val){
+    size_t index(0);
+    for(; index < size_ ; index++){
+      if(val <= (*this)[index]) 
+        remove(index);
+    }
+  }
 
   size_t size() const {
     return size_;
