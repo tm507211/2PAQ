@@ -32,11 +32,11 @@ class Server {
   rpc::server self_;                                     /* self */
   std::vector<rpc::client*> others_;     /* others[0] == Leader */
   bool leader_;                                          /* Am I the Leader? */
-  bool pulse_;
+  volatile  bool pulse_;
   size_t id_;
   std::vector<bool> alive_others_;			/*Are others alive? */
 
-  KeyValueStore<std::string, std::pair< std::pair<T,size_t>,CircularBuffer<size_t> >> kv_;   		/*Latest committed value and list of pending queries (new versions) */
+  KeyValueStore<std::string, std::pair< std::pair<T,size_t>,CircularBuffer<size_t>>> kv_;   		        /*Latest committed value and list of pending queries (new versions) */
   
   typedef char Action;
 
@@ -153,7 +153,9 @@ void acknowledge(size_t query, size_t id_no){
     Query q = queries_[query];
     queries_.remove(query);
     CircularBuffer<size_t> tmp_ver((kv_.get(q.key)).second);
-    tmp_ver.remove_smaller(query);						//Removes all earlier queries to the same key from circular buffer
+    std::vector<size_t> rm_ver = tmp_ver.remove_smaller(query);			//Removes all earlier queries to the same key from circular buffer
+    for(size_t i = 0; i < rm_ver.size(); i++)
+      queries_.remove(rm_ver[i]);						//Remove the corresponding queries from the main query list
     if(((kv_.get(q.key)).first).second > query)         			//Assumes all later queries have higher number				
       return;  									//never commit an older version
     switch (q.action){
@@ -200,7 +202,6 @@ void hello_world()
 }
 
 void holler_back(){
-  pulse_=false;
   others_[0]->send("alive",id_);
 }
 
@@ -239,8 +240,9 @@ void kill(size_t id_no){
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
       while(1){
-        hello_world();
+        hello_world();							//sends hello to other nodes
         std::this_thread::sleep_for (std::chrono::milliseconds(10));
+        /* Checks if others are still alive */
         mtx_lead.lock();
         for(size_t i=0; i<others_.size();i++){
            if(!alive_others_[i]){
@@ -259,17 +261,30 @@ void kill(size_t id_no){
               continue;
            }
            alive_others_.erase(alive_others_.begin() + i);
-           others_.erase(others_.begin() +i);   // Remove dead nodes 
+           others_.erase(others_.begin() +i);				// Remove dead nodes 
         }
            
         mtx_lead.unlock();
        } 
      } else {
       others_.push_back(new rpc::client(leader.first, leader.second));
-      while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
-      others_[0]->send("join", self_addr, self_port);
-      //holler_back();
+      std::chrono::steady_clock::time_point begin,right_now;
+      while(1){
+        while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
+        others_[0]->send("join", self_addr, self_port);
+        std::this_thread::sleep_for (std::chrono::milliseconds(5));      //Just giving time for the leader to include the node
+        pulse_ = true;
+	while(pulse_){
+          pulse_ = false;
+          begin = std::chrono::steady_clock::now();
+	  right_now = begin;
+          //std::this_thread::sleep_for (std::chrono::milliseconds(20));
+          while ( std::chrono::duration_cast<std::chrono::milliseconds>(right_now - begin).count() < 20 && !pulse_){
+            right_now = std::chrono::steady_clock::now();
+          } 
+        }  
       }
+     }
   }
 };
 

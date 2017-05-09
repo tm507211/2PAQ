@@ -130,13 +130,17 @@ class CircularBuffer{
     remove(index); /* does nothing if val is not found in buff_ */
   }
   
-  /* Removes all items smaller than or equal to val */
-  void remove_smaller(const T& val){
+  /* Removes all items smaller than or equal to val and returns them as a vector*/
+  std::vector<T> remove_smaller(const T& val){
     size_t index(0);
+    std::vector<T> rm_vec;
     for(; index < size_ ; index++){
-      if(val <= (*this)[index]) 
-        remove(index);
+      if(val <= (*this)[index]){ 
+        rm_vec.push_back((*this)[index]);
+        remove(index);       
+      }
     }
+  return rm_vec;
   }
 
   size_t size() const {
