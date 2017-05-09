@@ -31,6 +31,7 @@ template <class T>
 class Server {
   rpc::server self_;                                     /* self */
   std::vector<rpc::client*> others_;     /* others[0] == Leader */
+  std::vector<std::pair<std::string,size_t>> others_addr_;	/*address and port of others*/
   bool leader_;                                          /* Am I the Leader? */
   volatile  bool pulse_;
   size_t id_;
@@ -59,7 +60,7 @@ class Server {
     self_.bind("remove", [this](std::string key){ this->remove(key); });
 
     self_.bind("acknowledge", [this](size_t query, size_t id_no){ this->acknowledge(query,id_no); });
-    self_.bind("join", [this](std::string address, size_t port = 8080){ this->others_.push_back( new rpc::client(address, port)); this->alive_others_.push_back(true); });
+    self_.bind("join", [this](std::string address, size_t port = 8080){ this->join(address,port); });
     self_.bind("version", [this](std::string key){ return this->get_version(key);});			/*Leader gives version number*/
     self_.bind("alive", [this](size_t id_no){ (this->alive_others_[id_no]) = true; }) ;              /*Alive children*/
 
@@ -205,6 +206,17 @@ void holler_back(){
   others_[0]->send("alive",id_);
 }
 
+/*checks if it's a duplicate rejoin else adds to list of others */
+void join(const std::string& address, const size_t& port){
+  for(size_t i = 0; i < others_.size(); i++){
+    if(others_addr_[i] == std::make_pair(address,port))
+      return;
+  }
+  others_.push_back( new rpc::client(address, port)); 
+  alive_others_.push_back(true); 
+  others_addr_.push_back(std::make_pair(address,port)); 
+}
+
 /*
 void kill(size_t id_no){
   typename HashTable<size_t, Query>::iterator qit;
@@ -242,6 +254,7 @@ void kill(size_t id_no){
       while(1){
         hello_world();							//sends hello to other nodes
         std::this_thread::sleep_for (std::chrono::milliseconds(10));
+
         /* Checks if others are still alive */
         mtx_lead.lock();
         for(size_t i=0; i<others_.size();i++){
@@ -278,10 +291,10 @@ void kill(size_t id_no){
           pulse_ = false;
           begin = std::chrono::steady_clock::now();
 	  right_now = begin;
-          //std::this_thread::sleep_for (std::chrono::milliseconds(20));
-          while ( std::chrono::duration_cast<std::chrono::milliseconds>(right_now - begin).count() < 20 && !pulse_){
+          std::this_thread::sleep_for (std::chrono::milliseconds(20));
+          /* while ( std::chrono::duration_cast<std::chrono::milliseconds>(right_now - begin).count() < 20 && !pulse_){
             right_now = std::chrono::steady_clock::now();
-          } 
+          } */
         }  
       }
      }
