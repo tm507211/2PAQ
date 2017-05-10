@@ -33,6 +33,7 @@ class Server {
   std::vector<rpc::client*> others_;     /* others[0] == Leader */
   std::vector<std::pair<std::string,size_t>> others_addr_;	/*address and port of others*/
   bool leader_;                                          /* Am I the Leader? */
+  volatile bool ready_;					/*Ready to accept and and respond*/
   volatile  bool pulse_;
   size_t id_;
   std::vector<bool> alive_others_;			/*Are others alive? */
@@ -60,7 +61,7 @@ class Server {
     self_.bind("remove", [this](std::string key){ this->remove(key); });
 
     self_.bind("acknowledge", [this](size_t query, size_t id_no){ this->acknowledge(query,id_no); });
-    self_.bind("join", [this](std::string address, size_t port = 8080){ this->join(address,port); });
+    self_.bind("join", [this](std::string address, size_t port = 8080){ return this->join(address,port); });
     self_.bind("version", [this](std::string key){ return this->get_version(key);});			/*Leader gives version number*/
     self_.bind("alive", [this](size_t id_no){ (this->alive_others_[id_no]) = true; }) ;              /*Alive children*/
 
@@ -73,6 +74,8 @@ class Server {
   T get(const std::string& key){
     if (leader_)
       return ((kv_.get(key)).first).first;
+    if(!ready_)
+      return others_[0]->call("get",key).template as<T>();
     if(isclean(key))
       return ((kv_.get(key)).first).first;  
     return get_val(others_[0]->call("version", key).template as<size_t>()); //Asks leader for version number
@@ -143,6 +146,9 @@ void acknowledge(size_t query, size_t id_no){
       }
     }
     else {
+      while(!ready_){                                             		//Don't stage acknowledge any stage request till ready
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
       queries_.insert(query, Query(key, val, act));
       add_version(key,query);				
       others_[0]->send("acknowledge", query, id_no);
@@ -207,14 +213,45 @@ void holler_back(){
 }
 
 /*checks if it's a duplicate rejoin else adds to list of others */
-void join(const std::string& address, const size_t& port){
+/* returns vector of commited values */
+std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>> join(const std::string& address, const size_t port){
+  std::vector<std::pair<std::string,std::pair<T,size_t>>> committed_kv;
+  size_t ind = others_.size();
+
+  /* check if already part of others*/
   for(size_t i = 0; i < others_.size(); i++){
     if(others_addr_[i] == std::make_pair(address,port))
-      return;
+      return std::make_pair(true,committed_kv);
   }
-  others_.push_back( new rpc::client(address, port)); 
-  alive_others_.push_back(true); 
-  others_addr_.push_back(std::make_pair(address,port)); 
+
+  while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
+  queries_.begin();
+  
+  others_.push_back( new rpc::client(address, port));
+  alive_others_.push_back(true);
+  others_addr_.push_back(std::make_pair(address,port));
+
+    /* Send all of the in progress queries */
+    typename HashTable<size_t, Query>::iterator qit;
+    for (qit = queries_.begin(); qit != queries_.end(); ++qit){
+      ++(*qit).value.acks;
+      ((*qit).value.ack_vec).push_back(false);
+      others_[ind]->send("stage", (*qit).value.key, (*qit).value.val, (*qit).value.action, (*qit).key, ((*qit).value.ack_vec).size() - 1);
+    }
+
+    /* Send all commited data */
+    typename KeyValueStore<std::string,std::pair<std::pair<T,size_t>,CircularBuffer<size_t>>>::iterator it;
+    for (it = kv_.begin(); it != kv_.end(); ++it){
+      committed_kv.push_back(std::make_pair((*it).key,((*it).value).first));
+    }
+    return std::make_pair(false,committed_kv);
+ }
+
+void make_kvstore(const std::vector<std::pair<std::string,std::pair<T,size_t>>>& committed_kv){
+  for(size_t i=0; i < committed_kv.size(); i++){
+    kv_.put(committed_kv[i].first, std::make_pair(committed_kv[i].second, CircularBuffer<size_t>()));
+  }
+  ready_ = true;
 }
 
 /*
@@ -234,7 +271,7 @@ void kill(size_t id_no){
 */
 
  public:
-  Server(size_t port=8080) : self_(port), leader_(false), next_query_(0) {
+  Server(size_t port=8080) : self_(port), leader_(false), next_query_(0), ready_(false) {
     register_funcs();
   }
   ~Server(){
@@ -248,9 +285,11 @@ void kill(size_t id_no){
     //rpc::client self_c(self_addr,self_port);
     std::pair<std::string, size_t> leader = client.call("leader", self_addr, self_port).as<std::pair<std::string, size_t>>();
     typename HashTable<size_t, Query>::iterator qit;
+    std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>> j_response;
     self_.async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
+      ready_ =true;
       while(1){
         hello_world();							//sends hello to other nodes
         std::this_thread::sleep_for (std::chrono::milliseconds(10));
@@ -275,26 +314,27 @@ void kill(size_t id_no){
            }
            alive_others_.erase(alive_others_.begin() + i);
            others_.erase(others_.begin() +i);				// Remove dead nodes 
+           others_addr_.erase(others_addr_.begin() + i);
         }
            
         mtx_lead.unlock();
        } 
      } else {
       others_.push_back(new rpc::client(leader.first, leader.second));
-      std::chrono::steady_clock::time_point begin,right_now;
+      
       while(1){
+        ready_ = false;
         while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
-        others_[0]->send("join", self_addr, self_port);
-        std::this_thread::sleep_for (std::chrono::milliseconds(5));      //Just giving time for the leader to include the node
+        j_response = others_[0]->call("join", self_addr, self_port).template as<std::pair<bool,std::vector<std::pair<T,size_t>>>>();  //Error*****
+        ready_=j_response.first;
+        if(!ready_){							//If not ready build key value store
+        make_kvstore(j_response.second);
+        }
+        
         pulse_ = true;
 	while(pulse_){
           pulse_ = false;
-          begin = std::chrono::steady_clock::now();
-	  right_now = begin;
           std::this_thread::sleep_for (std::chrono::milliseconds(20));
-          /* while ( std::chrono::duration_cast<std::chrono::milliseconds>(right_now - begin).count() < 20 && !pulse_){
-            right_now = std::chrono::steady_clock::now();
-          } */
         }  
       }
      }
