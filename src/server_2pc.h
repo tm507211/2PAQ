@@ -14,6 +14,8 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <future>
+#include <chrono>
 
 #ifndef CM_SERVER_2PC
 #define CM_SERVER_2PC
@@ -26,7 +28,6 @@ class Server {
   rpc::server self_;                                     /* self */
   std::vector<rpc::client*> others_;                     /* others[0] == Leader */
   bool leader_;                                          /* Am I the Leader? */
-  bool ready_;
   
   KeyValueStore<std::string, T> kv_;                     /* self's key value storage */
 
@@ -34,11 +35,11 @@ class Server {
 
   struct Query{
     Query() {}
-    Query(const std::string& k, const T& val, Action act, size_t a = 0) : key(k), val(val), action(act), acks(a) {}
+  Query(const std::string& k, const T& val, Action act, size_t a = 0) : key(k), val(val), action(act), acks(a) { }
     std::string key;
     T val;
     Action action;
-    size_t acks;    /* If acks == 0 then ready to commit */
+    size_t acks;           /* If 0 then ready to commit */
   };
 
   HashTable<size_t, Query> queries_;
@@ -52,7 +53,7 @@ class Server {
     self_.bind("join", [this](std::string address, size_t port = 8080){ this->join(address, port); });
     self_.bind("stage", [this](std::string key, T val, Action act, size_t query){ this->stage(key, val, act, query); });
     self_.bind("commit", [this](size_t query){ this->commit(query); });
-    self_.bind("set", [this](std::string key, T val){ std::cout << "SET " << key << " : " << val << std::endl; this->kv_.put(key, val); });
+    self_.bind("set", [this](std::string key, T val){ this->kv_.put(key, val); });
     self_.bind("GET", [this](std::string key){ return this->kv_.get(key); });
   }
 
@@ -86,25 +87,49 @@ class Server {
   }
 
   /* This relies on the fact that only 1 thread is executing the server calls
-     -- Otherwise a query in progress could cause a lot of issues */
+     -- Otherwise a query in progress (or a new query) could cause a lot of issues */
   void join(const std::string& addr, const size_t port){
+    if (!leader_) return;
+    
     size_t ind = others_.size();
     others_.push_back(new rpc::client(addr, port));
     while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
     queries_.begin();
 
+    /* Send all commited data */
+    std::vector<std::future<clmdep_msgpack::object_handle>> futures;
+    typename KeyValueStore<std::string,T>::iterator it;
+    for (it = kv_.begin(); it != kv_.end(); ++it){
+      futures.push_back(others_[ind]->async_call("set", (*it).key, (*it).value));
+    }
+    /* Make sure everything got there -- If it fails be pessemistic */
+    for (size_t i = 0; i < futures.size(); ++i){
+      auto wait = futures[i].wait_for(std::chrono::milliseconds(others_[ind]->get_timeout()));
+      if (wait == std::future_status::timeout){ /* Error occured -- Remove Server from followers */
+	delete others_[ind];
+	others_.pop_back();
+	return;
+      }
+    }
+    /* We've successfully got the new follower upto speed on commited (K,V) */
+    futures.clear();
+
     /* Send all of the in progress queries */
     typename HashTable<size_t, Query>::iterator qit;
     for (qit = queries_.begin(); qit != queries_.end(); ++qit){
       ++(*qit).value.acks;
-      others_[ind]->send("stage", (*qit).value.key, (*qit).value.val, (*qit).value.action, (*qit).key);
+      futures.push_back(others_[ind]->async_call("stage", (*qit).value.key, (*qit).value.val, (*qit).value.action, (*qit).key));
     }
-
-    /* Send all commited data */
-    typename KeyValueStore<std::string,T>::iterator it;
-    for (it = kv_.begin(); it != kv_.end(); ++it){
-      others_[ind]->send("set", (*it).key, (*it).value);
+    /* Make sure everything got there -- If it fails be pessemistic */
+    for (size_t i = 0; i < futures.size(); ++i){
+      auto wait = futures[i].wait_for(std::chrono::milliseconds(others_[ind]->get_timeout()));
+      if (wait == std::future_status::timeout){ /* Error occured -- Remove Server from followers */
+	delete others_[ind];
+	others_.pop_back();
+	return;
+      }
     }
+    /* The new node is all caught up and is ready to join the party :) */
   }
 
   void stage(const std::string& key, const T& val, Action act, size_t query){
@@ -150,7 +175,7 @@ class Server {
   }
   
  public:
- Server(size_t port=8080) : self_(port), leader_(false), ready_(false), next_query_(0) {
+ Server(size_t port=8080) : self_(port), leader_(false), next_query_(0) {
     register_funcs();
   }
 
@@ -166,7 +191,6 @@ class Server {
     self_.async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
-      ready_ = true;
     } else {
       others_.push_back(new rpc::client(leader.first, leader.second));
       while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
