@@ -4,9 +4,11 @@
 
     Date:   April 23, 2017
 
-    Description: A simple implementation for Two Phase Commit
+    Description: A simple implementation for Two Phase Commit with Apportioned Queries
  *************************************************************************************/
-#include "server_2pc.h"
+//#include "server_2pc.h"
+//#include "serversion.h" //testAQ
+#include "server_2pc_AQ.h"
 #include <iostream>
 #include <string>
 #include <thread>

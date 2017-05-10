@@ -38,8 +38,9 @@ class Server {
   size_t id_;
   std::vector<bool> alive_others_;			/*Are others alive? */
 
-  KeyValueStore<std::string, std::pair< std::pair<T,size_t>,CircularBuffer<size_t>>> kv_;   		        /*Latest committed value and list of pending queries (new versions) */
-  
+  typedef KeyValueStore<std::string, std::pair< std::pair<T,size_t>,CircularBuffer<size_t>>> KVStore;   		        /*Latest committed value and list of pending queries (new versions) */
+  KVStore kv_;
+
   typedef char Action;
 
   struct Query{
@@ -223,13 +224,14 @@ std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>> join(con
     if(others_addr_[i] == std::make_pair(address,port))
       return std::make_pair(true,committed_kv);
   }
-
-  while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
-  queries_.begin();
   
   others_.push_back( new rpc::client(address, port));
   alive_others_.push_back(true);
   others_addr_.push_back(std::make_pair(address,port));
+
+  while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
+  queries_.begin();
+
 
     /* Send all of the in progress queries */
     typename HashTable<size_t, Query>::iterator qit;
@@ -325,10 +327,11 @@ void kill(size_t id_no){
       while(1){
         ready_ = false;
         while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
-        j_response = others_[0]->call("join", self_addr, self_port).template as<std::pair<bool,std::vector<std::pair<T,size_t>>>>();  //Error*****
+        j_response = others_[0]->call("join", self_addr, self_port).template as<std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>>>(); 
         ready_=j_response.first;
         if(!ready_){							//If not ready build key value store
-        make_kvstore(j_response.second);
+          kv_ = KVStore();
+          make_kvstore(j_response.second);
         }
         
         pulse_ = true;
