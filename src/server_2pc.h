@@ -17,7 +17,7 @@
 #include <future>
 #include <chrono>
 #include <mutex>
-#include <shared_mutex>
+#include <atomic>
 
 #ifndef CM_SERVER_2PC
 #define CM_SERVER_2PC
@@ -33,6 +33,8 @@ class Server {
   std::vector<rpc::client*> others_;                     /* others[0] == Leader */
   std::vector<bool> alive_;                              /* Did node i respond back in time? */
   bool leader_;                                          /* Am I the Leader? */
+  std::atomic<bool> ready_;                              /* Am I finished joining the system? */
+  std::atomic<bool> pulse_;                              /* Has the Leader contacted me recently? */
   
   KeyValueStore<std::string, T> kv_;                     /* self's key value storage */
 
@@ -66,6 +68,7 @@ class Server {
     self_.bind("stage", [this](std::string key, T val, Action act, size_t query, size_t index){ this->stage(key, val, act, query, index); });
     self_.bind("commit", [this](size_t query){ this->commit(query); });
     self_.bind("set", [this](std::string key, T val){ this->kv_.put(key, val); });
+    self_.bind("ready", [this](){ this->ready_ = true; });
     /* Testing aliveness */
     self_.bind("alive", [this](size_t index){ this->alive(index); });
     /* For Testing Purposes */
@@ -157,6 +160,7 @@ class Server {
     /* The new node is all caught up and is ready to join the party :) */
     std::unique_lock<std::mutex> alock(alive_mutex_);
     alive_.push_back(true);  /* The new node is infact still alive ... */
+    others_[ind]->send("ready");
   }
 
   void stage(const std::string& key, const T& val, Action act, size_t query, size_t index = 0){
@@ -210,6 +214,7 @@ class Server {
       alive_[index] = true;
     } else {
       std::unique_lock<std::mutex> lock(others_mutex_);
+      pulse_ = true;
       others_[0]->send("alive", index);
     }
   }
@@ -238,7 +243,7 @@ class Server {
   }
   
  public:
- Server(size_t port=8080) : self_(port), leader_(false), next_query_(0) {
+  Server(size_t port=8080) : self_(port), leader_(false), ready_(false), pulse_(false), next_query_(0) {
     register_funcs();
   }
 
@@ -254,6 +259,8 @@ class Server {
     self_.async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
+      ready_ = true;
+      pulse_ = true;
       while (1){
 	auto start = std::chrono::steady_clock::now();
 
@@ -288,6 +295,22 @@ class Server {
       others_.push_back(new rpc::client(leader.first, leader.second));
       while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
       others_[0]->send("join", self_addr, self_port);
+      while (!ready_);
+      pulse_ = true;
+      while(1){
+	auto start = std::chrono::steady_clock::now();
+	if (!pulse_){
+	  /* Do something here to show that the leader hasn't contacted me */
+	  /* Either the leader is dead, cannot contact me or is running slowly, or I was too slow */
+	}
+	pulse_ = false;
+
+	/* Calculate how Long to sleep to keep approximately ALIVE_TIME between iterations */
+	auto end = std::chrono::steady_clock::now();
+	size_t time_taken = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+	if (time_taken < ALIVE_TIME)
+	  std::this_thread::sleep_for(std::chrono::milliseconds(ALIVE_TIME - time_taken));
+      }
     }
   }
 };
