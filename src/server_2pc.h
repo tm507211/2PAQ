@@ -4,7 +4,8 @@
 
     Date:   April 22, 2017
 
-    Description: A simple implementation for Two Phase Commit Servers
+    Description: A simple implementation for Replicated Key-Value Store using
+                 Two Phase Commit For Consensus
  *************************************************************************************/
 
 #include "rpc/server.h"
@@ -25,12 +26,13 @@
 #define PUT 0
 #define REMOVE 1
 
-#define ALIVE_TIME 5000 /* A commit may take upto max(ALIVE_TIME, others_[i]->get_timeout) ms */
+#define ALIVE_TIME 5000 /* A commit may take upto max(ALIVE_TIME, others_[i]->get_timeout()) ms */
 
 template <class T>
 class Server {
-  rpc::server self_;                                     /* self */
+  rpc::server* self_;                                    /* self */
   std::vector<rpc::client*> others_;                     /* others[0] == Leader */
+  std::vector<std::pair<std::string, size_t>> others_id_;/* Only used by Leader */
   std::vector<bool> alive_;                              /* Did node i respond back in time? */
   bool leader_;                                          /* Am I the Leader? */
   std::atomic<bool> ready_;                              /* Am I finished joining the system? */
@@ -60,19 +62,21 @@ class Server {
   std::mutex queries_mutex_;
 
   void register_funcs(){
-    self_.bind("get", [this](std::string key){ return this->get(key); });
-    self_.bind("put", [this](std::string key, T val){ this->put(key, val); });
-    self_.bind("remove", [this](std::string key){ this->remove(key); });
-    self_.bind("acknowledge", [this](size_t query, size_t index){ this->acknowledge(query, index); });
-    self_.bind("join", [this](std::string address, size_t port = 8080){ this->join(address, port); });
-    self_.bind("stage", [this](std::string key, T val, Action act, size_t query, size_t index){ this->stage(key, val, act, query, index); });
-    self_.bind("commit", [this](size_t query){ this->commit(query); });
-    self_.bind("set", [this](std::string key, T val){ this->kv_.put(key, val); });
-    self_.bind("ready", [this](){ this->ready_ = true; });
+    self_->bind("get", [this](std::string key){ return this->get(key); });
+    self_->bind("put", [this](std::string key, T val){ this->put(key, val); });
+    self_->bind("remove", [this](std::string key){ this->remove(key); });
+    self_->bind("acknowledge", [this](size_t query, size_t index){ this->acknowledge(query, index); });
+    self_->bind("join", [this](std::string address, size_t port = 8080){ this->join(address, port); });
+    self_->bind("stage", [this](std::string key, T val, Action act, size_t query, size_t index){ this->stage(key, val, act, query, index); });
+    self_->bind("commit", [this](size_t query){ this->commit(query); });
+    self_->bind("set", [this](std::string key, T val){ this->kv_.put(key, val); });
+    self_->bind("ready", [this](){ std::cout << "HEY" << std::endl; this->ready_ = true; });
     /* Testing aliveness */
-    self_.bind("alive", [this](size_t index){ this->alive(index); });
+    self_->bind("alive", [this](size_t index){ this->alive(index); });
+    self_->bind("check", [this](std::string addr, size_t port){ return this->check(addr, port); });
+    self_->bind("ping", [](){});
     /* For Testing Purposes */
-    self_.bind("GET", [this](std::string key){ return this->kv_.get(key); });
+    self_->bind("GET", [this](std::string key){ return this->kv_.get(key); });
   }
 
   T get(const std::string& key){
@@ -119,10 +123,10 @@ class Server {
     std::unique_lock<std::mutex> qlock(queries_mutex_);
     std::unique_lock<std::mutex> olock(others_mutex_);
     size_t ind = others_.size();
+
     others_.push_back(new rpc::client(addr, port));
     while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
-    queries_.begin();
-
+    
     /* Send all commited data */
     std::vector<std::future<clmdep_msgpack::object_handle>> futures;
     typename KeyValueStore<std::string,T>::iterator it;
@@ -159,8 +163,14 @@ class Server {
     }
     /* The new node is all caught up and is ready to join the party :) */
     std::unique_lock<std::mutex> alock(alive_mutex_);
+    others_id_.push_back(std::make_pair(addr, port));
     alive_.push_back(true);  /* The new node is infact still alive ... */
-    others_[ind]->send("ready");
+    try {
+      others_[ind]->call("ready");
+    } catch (...) {
+      /* We Should Do Something Here */
+    }
+    std::cout << addr << " : " << port << std::endl;
   }
 
   void stage(const std::string& key, const T& val, Action act, size_t query, size_t index = 0){
@@ -219,6 +229,16 @@ class Server {
     }
   }
 
+  bool check(const std::string& addr, size_t port){
+    std::unique_lock<std::mutex> lock(others_mutex_);
+    std::pair<std::string, size_t> look(addr, port);
+    for (size_t i = 0; others_id_.size(); ++i){
+      if (others_id_[i] == look)
+	return true;
+    }
+    return false;
+  }
+
   void cull(const std::vector<size_t>& dead){
     /* always use q o a (nested locks) to avoid dead lock */
     std::unique_lock<std::mutex> qlock(queries_mutex_);
@@ -226,9 +246,9 @@ class Server {
     std::unique_lock<std::mutex> alock(alive_mutex_);
     typename HashTable<size_t, Query>::iterator it;
     for (int i = dead.size()-1; 0 <= i; --i){
-      std::cout << "RIP: " << dead[i] << std::endl;
       delete others_[dead[i]];
       others_.erase(others_.begin()+dead[i]);
+      others_id_.erase(others_id_.begin()+dead[i]);
       alive_.erase(alive_.begin()+dead[i]);
       /* Acknowledge on behalf of dead nodes */
       for (it = queries_.begin(); it != queries_.end(); ++it){
@@ -243,7 +263,7 @@ class Server {
   }
   
  public:
-  Server(size_t port=8080) : self_(port), leader_(false), ready_(false), pulse_(false), next_query_(0) {
+   Server(size_t port=8080) : self_(new rpc::server(port)), leader_(false), ready_(false), pulse_(false), next_query_(0) {
     register_funcs();
   }
 
@@ -256,7 +276,7 @@ class Server {
   void run(std::string self_addr, size_t self_port, std::string address, size_t port){
     rpc::client client(address, port);
     std::pair<std::string, size_t> leader = client.call("leader", self_addr, self_port).as<std::pair<std::string, size_t>>();
-    self_.async_run();
+    self_->async_run();
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
       ready_ = true;
@@ -295,15 +315,54 @@ class Server {
       others_.push_back(new rpc::client(leader.first, leader.second));
       while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
       others_[0]->send("join", self_addr, self_port);
-      while (!ready_);
+      while (!ready_){
+	std::this_thread::sleep_for(std::chrono::milliseconds(100)); /* sleep for 100 ms and check again */
+      }
       pulse_ = true;
       while(1){
 	auto start = std::chrono::steady_clock::now();
 	if (!pulse_){
-	  /* Do something here to show that the leader hasn't contacted me */
-	  /* Either the leader is dead, cannot contact me or is running slowly, or I was too slow */
+	  std::cout << "No Pulse" << std::endl;
+	  bool found = false;
+	  std::unique_lock<std::mutex> lock(others_mutex_);
+	  if (others_[0]->get_connection_state() == rpc::client::connection_state::connected){
+	    try {
+	      found = others_[0]->call("check", self_addr, self_port).template as<bool>();
+	    } catch (...){
+	      /* timed out do nothing */
+	    }
+	  }
+	  if (!found){
+	    /* keep trying to rejoin the system */
+	    self_->stop(); /* Stop all ongoing services */
+	    delete self_;
+	    self_ = new rpc::server(self_port);
+	    register_funcs();
+	    lock.unlock();
+	    kv_ = KeyValueStore<std::string, T>();
+	    queries_ = HashTable<size_t, Query>();
+	    ready_ = false;
+	    while (others_[0]->get_connection_state() != rpc::client::connection_state::connected){
+  	      delete others_[0];
+	      others_[0] = new rpc::client(leader.first, leader.second);
+	      std::this_thread::sleep_for(std::chrono::milliseconds(ALIVE_TIME));
+	    }
+	    self_->async_run();
+	    std::this_thread::sleep_for(std::chrono::milliseconds(ALIVE_TIME));
+	    std::cout << "Rejoined" << std::endl;
+	    others_[0]->send("join", self_addr, self_port);
+            while (!ready_){
+   	      std::this_thread::sleep_for(std::chrono::milliseconds(100)); /* sleep for 100 ms and check again */
+            }
+	    std::cout << "Rejoined Complete" << std::endl;
+	    pulse_ = true;
+	  } else {
+	    pulse_ = false;
+	    lock.unlock();
+	  }
+	} else {
+  	  pulse_ = false;
 	}
-	pulse_ = false;
 
 	/* Calculate how Long to sleep to keep approximately ALIVE_TIME between iterations */
 	auto end = std::chrono::steady_clock::now();
