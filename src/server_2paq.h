@@ -12,6 +12,7 @@
 #include "rpc/client.h"
 #include "key_value.h"
 #include "hash_table.h"
+#include "circular_buffer.h"
 #include <vector>
 #include <string>
 #include <iostream>
@@ -25,6 +26,7 @@
 
 #define PUT 0
 #define REMOVE 1
+#define DONE 2
 
 #define ALIVE_TIME 5000 /* A commit may take upto max(ALIVE_TIME, others_[i]->get_timeout()) ms */
 
@@ -37,8 +39,18 @@ class Server {
   bool leader_;                                          /* Am I the Leader? */
   std::atomic<bool> ready_;                              /* Am I finished joining the system? */
   std::atomic<bool> pulse_;                              /* Has the Leader contacted me recently? */
+
+
+  /* The type of versions */
+  struct versions_t{
+    versions_t () : current(0), valid(false) {}
+    versions_t (size_t v) : current(v), valid(true) {}
+    size_t current;
+    bool valid;
+    CircularBuffer<size_t> versions;
+  };
   
-  KeyValueStore<std::string, T> kv_;                     /* self's key value storage */
+  KeyValueStore<std::string, versions_t> kv_;                     /* self's key value storage */
 
   typedef char Action;
 
@@ -75,13 +87,20 @@ class Server {
     self_->bind("alive", [this](size_t index){ this->alive(index); });
     self_->bind("check", [this](std::string addr, size_t port){ return this->check(addr, port); });
     self_->bind("ping", [](){});
-    /* For Testing Purposes */
-    self_->bind("GET", [this](std::string key){ return this->kv_.get(key); });
   }
 
   T get(const std::string& key){
-    if (leader_)
-      return kv_.get(key);
+    typename KeyValueStore<std::string, versions_t>::find_t found = kv_.find(key);
+    versions_t vers = versions_t();
+    if (found.found){
+      vers = found.value;
+    }
+    if (leader_ || vers.versions.size() <= 1){
+      if (vers.valid){
+	return queries_[vers.current].val;
+      }
+      return T();
+    }
     std::unique_lock<std::mutex> lock(others_mutex_);
     return others_[0]->call("get", key).template as<T>();
   }
@@ -127,11 +146,17 @@ class Server {
     others_.push_back(new rpc::client(addr, port));
     while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
     
-    /* Send all commited data */
+    /* Send all of the in progress queries / staged versions */
     std::vector<std::future<clmdep_msgpack::object_handle>> futures;
-    typename KeyValueStore<std::string,T>::iterator it;
-    for (it = kv_.begin(); it != kv_.end(); ++it){
-      futures.push_back(others_[ind]->async_call("set", (*it).key, (*it).value));
+    typename HashTable<size_t, Query>::iterator qit;
+    for (qit = queries_.begin(); qit != queries_.end(); ++qit){
+      if ((*qit).value.action == DONE){   /* Commited Value */
+	(*qit).value.who.push_back(true);
+      } else {
+        (*qit).value.who.push_back(false);
+        ++(*qit).value.acks;
+      }
+      others_[ind]->call("stage", (*qit).value.key, (*qit).value.val, (*qit).value.action, (*qit).key, ind);
     }
     /* Make sure everything got there -- If it fails be pessemistic */
     for (size_t i = 0; i < futures.size(); ++i){
@@ -142,15 +167,15 @@ class Server {
 	return;
       }
     }
-    /* We've successfully got the new follower upto speed on commited (K,V) */
+    /* We've successfully got the new follower upto speed on all staged versions */
     futures.clear();
 
-    /* Send all of the in progress queries */
-    typename HashTable<size_t, Query>::iterator qit;
-    for (qit = queries_.begin(); qit != queries_.end(); ++qit){
-      (*qit).value.who.push_back(false);
-      ++(*qit).value.acks;
-      futures.push_back(others_[ind]->async_call("stage", (*qit).value.key, (*qit).value.val, (*qit).value.action, (*qit).key, ind));
+    /* Send all commited data (Reconstructs from queries and using commit) */
+    typename KeyValueStore<std::string,versions_t>::iterator it;
+    for (it = kv_.begin(); it != kv_.end(); ++it){
+      if ((*it).value.valid){
+        futures.push_back(others_[ind]->async_call("commit", (*it).value.current));
+      }
     }
     /* Make sure everything got there -- If it fails be pessemistic */
     for (size_t i = 0; i < futures.size(); ++i){
@@ -173,42 +198,69 @@ class Server {
   }
 
   void stage(const std::string& key, const T& val, Action act, size_t query, size_t index = 0){
+    /* Add this version to the version history of key */
+    typename KeyValueStore<std::string, versions_t>::find_t found = kv_.find(key);
+    versions_t vers = versions_t();
+    if (found.found){
+      vers = found.value;
+    }
+    vers.versions.insert(query);
+    kv_.put(key, vers);
+    /* Continue with normal staging of 2pc */
     std::unique_lock<std::mutex> qlock(queries_mutex_);
     std::unique_lock<std::mutex> olock(others_mutex_);
     if (leader_){
+      queries_.insert(query, Query(key, val, act, others_.size()));
       if (others_.size() == 0){
-        switch(act){
-          case PUT:
-    	    kv_.put(key, val);
-  	  break;
-          case REMOVE:
-	    kv_.remove(key);
-	  break;
-        }
+	commit(query);
 	return;
       }
-      queries_.insert(query, Query(key, val, act, others_.size()));
       for (size_t i = 0; i < others_.size(); ++i){
         others_[i]->send("stage", key, val, act, query, i);
       }
     }
     else {
       queries_.insert(query, Query(key, val, act));
-      others_[0]->send("acknowledge", query, index);
+      if (act != DONE){ /* Only went when joining */
+        others_[0]->send("acknowledge", query, index);
+      }
     }
   }
 
   /* Assumes thread already have control of queries_mutex_ and others_mutex_ */
   void commit(size_t query){
     Query q = queries_[query];
-    queries_.remove(query);
-        switch (q.action){
+    versions_t vers = kv_.get(q.key); /* q.key must be in the kv_ (it was inserted in stage) */
+    switch (q.action){
       case PUT:
-	kv_.put(q.key, q.val);
+	if (vers.valid){
+	  queries_.remove(vers.current);
+	  vers.versions.remove_element(vers.current);
+	}
+	vers.current = query;
+	vers.valid = true;
+	kv_.put(q.key, vers);
+	queries_[query].action = DONE; /* This is the most recently commited query for key */
         break;
       case REMOVE:
-	kv_.remove(q.key);
+	if (vers.valid){
+	  queries_.remove(vers.current);
+	  vers.versions.remove_element(query);
+	}
+	queries_.remove(query);
+	vers.versions.remove_element(query);
+	if (vers.versions.size() != 0){
+	  vers.valid = false;
+	  kv_.put(q.key, vers);
+	} else {
+	  kv_.remove(q.key);
+	}
         break;
+      case DONE: /* This is the current successfully commited value -- sent during a join request */
+	vers.current = query;
+	vers.valid = true;
+	kv_.put(q.key, vers);
+	break;
     }
     if (leader_){
       for (size_t i = 0; i < others_.size(); ++i){
@@ -337,7 +389,7 @@ class Server {
 	    self_ = new rpc::server(self_port);
 	    register_funcs();
 	    lock.unlock();
-	    kv_ = KeyValueStore<std::string, T>();
+	    kv_ = KeyValueStore<std::string, versions_t>();
 	    queries_ = HashTable<size_t, Query>();
 	    ready_ = false;
 	    while (others_[0]->get_connection_state() != rpc::client::connection_state::connected){

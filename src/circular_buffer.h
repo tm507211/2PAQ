@@ -140,7 +140,7 @@ class CircularBuffer{
         remove(index);       
       }
     }
-  return rm_vec;
+    return rm_vec;
   }
 
   size_t size() const {
