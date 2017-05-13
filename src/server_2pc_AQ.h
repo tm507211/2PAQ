@@ -18,6 +18,7 @@
 #include <mutex>
 #include <thread>
 #include <iostream>
+#include <atomic>
 
 #ifndef CM_SERVER_2PC_AQ
 #define CM_SERVER_2PC_AQ
@@ -33,8 +34,8 @@ class Server {
   std::vector<rpc::client*> others_;     /* others[0] == Leader */
   std::vector<std::pair<std::string,size_t>> others_addr_;	/*address and port of others*/
   bool leader_;                                          /* Am I the Leader? */
-  volatile bool ready_;					/*Ready to accept and and respond*/
-  volatile  bool pulse_;
+  std::atomic_bool ready_;					/*Ready to accept and and respond*/
+  std::atomic_bool pulse_;
   size_t id_;
   std::vector<bool> alive_others_;			/*Are others alive? */
 
@@ -56,6 +57,10 @@ class Server {
   HashTable<size_t, Query> queries_;
   size_t next_query_;
 
+  std::mutex alive_mutex_;
+  std::mutex others_mutex_;
+  std::mutex queries_mutex_;
+
   void register_funcs(){
     self_.bind("get", [this](std::string key){ return this->get(key); });
     self_.bind("put", [this](std::string key, T val){ this->put(key, val); });
@@ -75,10 +80,15 @@ class Server {
   T get(const std::string& key){
     if (leader_)
       return ((kv_.get(key)).first).first;
-    if(!ready_)
+    if(!ready_){
+      std::unique_lock<std::mutex> lock(others_mutex_);
       return others_[0]->call("get",key).template as<T>();
-    if(isclean(key))
+    }
+    if(isclean(key)){
+     // std::cout<<key<<"\n";
       return ((kv_.get(key)).first).first;  
+    }
+    std::unique_lock<std::mutex> lock(others_mutex_);
     return get_val(others_[0]->call("version", key).template as<size_t>()); //Asks leader for version number
   }
 
@@ -86,6 +96,7 @@ class Server {
     if (leader_){
       stage(key, val, PUT, next_query_++);
     } else {
+      std::unique_lock<std::mutex> lock(others_mutex_);
       others_[0]->send("put", key, val); /* All calls must be redirected to leader */
     }
   }
@@ -111,21 +122,25 @@ void remove(const std::string& key){
       stage(key, T(), REMOVE, next_query_++);
     }
     else{
+      std::unique_lock<std::mutex> lock(others_mutex_);
       others_[0]->send("remove", key);
     }
   }
 
 void acknowledge(size_t query, size_t id_no){
+    std::unique_lock<std::mutex> qlock(queries_mutex_);
     if(!(queries_[query].ack_vec)[id_no]){                //no double counting
        --queries_[query].acks;
        (queries_[query].ack_vec)[id_no] = true;          //keep track of who acknowledges
-    }
-    if (queries_[query].acks == 0){
-      commit(query);
+       if (queries_[query].acks == 0){
+    std::unique_lock<std::mutex> olock(others_mutex_);
+         commit(query);
+       }
     }
   }
-  
  void stage(const std::string& key, const T& val, Action act, size_t query, size_t id_no =0){
+    std::unique_lock<std::mutex> olock(others_mutex_);
+    std::unique_lock<std::mutex> qlock(queries_mutex_);
     if( ((kv_.get(key)).first).second > query ) 								 	//never stage a version older than the committed version
       return;
     if (leader_){
@@ -191,6 +206,7 @@ size_t get_version(const std::string& key){
 
 /* Value of the given version/query */
 T get_val(size_t query){
+   std::unique_lock<std::mutex> lock(queries_mutex_);
    Query q = queries_[query];
    switch(q.action){
       case PUT:
@@ -203,6 +219,8 @@ T get_val(size_t query){
 
 void hello_world()
 {
+  std::unique_lock<std::mutex> olock(others_mutex_);
+  std::unique_lock<std::mutex> alock(alive_mutex_);
   for(size_t i=0; i< others_.size(); ++i){
     alive_others_[i]=false;
     others_[i]->send("hello",i);
@@ -216,6 +234,7 @@ void holler_back(){
 /*checks if it's a duplicate rejoin else adds to list of others */
 /* returns vector of commited values */
 std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>> join(const std::string& address, const size_t port){
+  std::unique_lock<std::mutex> lock(others_mutex_);
   std::vector<std::pair<std::string,std::pair<T,size_t>>> committed_kv;
   size_t ind = others_.size();
 
@@ -224,14 +243,15 @@ std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>> join(con
     if(others_addr_[i] == std::make_pair(address,port))
       return std::make_pair(true,committed_kv);
   }
-  
+  std::unique_lock<std::mutex> alock(alive_mutex_);
   others_.push_back( new rpc::client(address, port));
   alive_others_.push_back(true);
   others_addr_.push_back(std::make_pair(address,port));
+  alock.unlock();
 
   while(others_[ind]->get_connection_state() != rpc::client::connection_state::connected);
-  queries_.begin();
-
+  std::unique_lock<std::mutex> qlock(queries_mutex_);
+  
 
     /* Send all of the in progress queries */
     typename HashTable<size_t, Query>::iterator qit;
@@ -254,6 +274,7 @@ void make_kvstore(const std::vector<std::pair<std::string,std::pair<T,size_t>>>&
     kv_.put(committed_kv[i].first, std::make_pair(committed_kv[i].second, CircularBuffer<size_t>()));
   }
   ready_ = true;
+  std::cout<<"Ready!";
 }
 
 /*
@@ -297,7 +318,10 @@ void kill(size_t id_no){
         std::this_thread::sleep_for (std::chrono::milliseconds(10));
 
         /* Checks if others are still alive */
-        mtx_lead.lock();
+        std::unique_lock<std::mutex> olock(others_mutex_);
+        std::unique_lock<std::mutex> alock(alive_mutex_);
+        std::unique_lock<std::mutex> qlock(queries_mutex_);
+        
         for(size_t i=0; i<others_.size();i++){
            if(!alive_others_[i]){
              for (qit = queries_.begin(); qit != queries_.end(); ++qit){
@@ -308,6 +332,7 @@ void kill(size_t id_no){
                }
            }     
         }
+        qlock.unlock();
         size_t i=0;
         while(i<others_.size()){
            if(alive_others_[i]){
@@ -319,15 +344,18 @@ void kill(size_t id_no){
            others_addr_.erase(others_addr_.begin() + i);
         }
            
-        mtx_lead.unlock();
        } 
      } else {
+   
       others_.push_back(new rpc::client(leader.first, leader.second));
       
       while(1){
         ready_ = false;
+        std::unique_lock<std::mutex> olock(others_mutex_);
+       
         while (others_[0]->get_connection_state() != rpc::client::connection_state::connected);
         j_response = others_[0]->call("join", self_addr, self_port).template as<std::pair<bool,std::vector<std::pair<std::string,std::pair<T,size_t>>>>>(); 
+        olock.unlock();
         ready_=j_response.first;
         if(!ready_){							//If not ready build key value store
           kv_ = KVStore();
