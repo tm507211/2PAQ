@@ -89,6 +89,7 @@ class Server {
   void put(const std::string& key, const T& val){
     if (leader_){
       stage(key, val, PUT, next_query_++);
+      
     } else {
       std::unique_lock<std::mutex> lock(others_mutex_);
       others_[0]->send("put", key, val); /* All calls must be redirected to leader */

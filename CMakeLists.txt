@@ -25,6 +25,15 @@ set_target_properties(
         COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
 target_compile_definitions(client PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})
 
+add_executable(test_client src/test_client.cc)
+target_link_libraries(test_client ${RPCLIB_LIBS} pthread)
+set_target_properties(
+        test_client
+        PROPERTIES
+        CXX_STANDARD 14
+        COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
+target_compile_definitions(test_client PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})
+
 add_executable(main2pc src/main_2pc.cc)
 target_link_libraries(main2pc ${RPCLIB_LIBS} pthread)
 set_target_properties(

@@ -81,7 +81,6 @@ class Server {
     self_->bind("join", [this](std::string address, size_t port = 8080){ this->join(address, port); });
     self_->bind("stage", [this](std::string key, T val, Action act, size_t query, size_t index){ this->stage(key, val, act, query, index); });
     self_->bind("commit", [this](size_t query){ this->commit(query); });
-    self_->bind("set", [this](std::string key, T val){ this->kv_.put(key, val); });
     self_->bind("ready", [this](){ this->ready_ = true; });
     /* Testing aliveness */
     self_->bind("alive", [this](size_t index){ this->alive(index); });
