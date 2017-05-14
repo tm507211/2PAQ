@@ -19,6 +19,7 @@
 #include <chrono>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 
 #ifndef CM_SERVER_2PC
 #define CM_SERVER_2PC
@@ -41,16 +42,28 @@ class Server {
   KeyValueStore<std::string, T> kv_;                     /* self's key value storage */
 
   typedef char Action;
+  typedef std::chrono::steady_clock::time_point TIME_STAMP;
 
   struct Query{
     Query() {}
-    Query(const std::string& k, const T& val, Action act, size_t a = 0) : key(k), val(val), action(act), acks(a) { who.resize(a, false); }
+    Query(const std::string& k, const T& val, Action act, TIME_STAMP now, size_t a = 0) : key(k), val(val), action(act), time(now), acks(a) { who.resize(a, false); }
     std::string key;
     T val;
     Action action;
     std::vector<bool> who;
+    TIME_STAMP time;
     size_t acks;           /* If acks == 0 then ready to commit */
   };
+
+  struct time_info{
+    time_info() {}
+    time_info(TIME_STAMP s, size_t t, Action act) : start(s), time(t), action(act) {}
+    TIME_STAMP start;
+    size_t time;
+    Action action;
+  };
+
+  std::vector<time_info> times_;
 
   /* The set of inprogress commits */
   HashTable<size_t, Query> queries_;
@@ -60,6 +73,7 @@ class Server {
   std::mutex alive_mutex_;
   std::mutex others_mutex_;
   std::mutex queries_mutex_;
+  std::mutex times_mutex_;
 
   void register_funcs(){
     self_->bind("get", [this](std::string key){ return this->get(key); });
@@ -188,13 +202,13 @@ class Server {
         }
 	return;
       }
-      queries_.insert(query, Query(key, val, act, others_.size()));
+      queries_.insert(query, Query(key, val, act, std::chrono::steady_clock::now(), others_.size()));
       for (size_t i = 0; i < others_.size(); ++i){
         others_[i]->send("stage", key, val, act, query, i);
       }
     }
     else {
-      queries_.insert(query, Query(key, val, act));
+      queries_.insert(query, Query(key, val, act, std::chrono::steady_clock::now()));
       others_[0]->send("acknowledge", query, index);
     }
   }
@@ -215,6 +229,10 @@ class Server {
       for (size_t i = 0; i < others_.size(); ++i){
 	others_[i]->send("commit", query);
       }
+      auto now = std::chrono::steady_clock::now();
+      size_t taken = std::chrono::duration_cast<std::chrono::nanoseconds>(now - q.time).count();
+      std::unique_lock<std::mutex> tlock(times_mutex_);
+      times_.push_back(time_info(q.time, taken, q.action));
     }
   }
 
@@ -281,6 +299,7 @@ class Server {
       leader_ = true;
       ready_ = true;
       pulse_ = true;
+      auto BEGINING_OF_TIME = std::chrono::steady_clock::now();
       while (1){
 	auto start = std::chrono::steady_clock::now();
 
@@ -305,6 +324,21 @@ class Server {
 	  }
 	}
 
+	{ std::unique_lock<std::mutex> tlock(times_mutex_);
+	  for (size_t i = 0; i < times_.size(); ++i){
+	    switch (times_[i].action){
+	      case PUT:
+		std::cout << "PUT ";
+		break;
+  	      case REMOVE:
+		std::cout << "REMOVE ";
+	        break;
+	    }
+	    size_t start = std::chrono::duration_cast<std::chrono::nanoseconds>(times_[i].start - BEGINING_OF_TIME).count();
+	    std::cout << start << " " << times_[i].time << std::endl;
+	  }
+	  times_.clear();
+	}
 	/* Calculate how Long to sleep to keep approximately ALIVE_TIME between iterations */
 	auto end = std::chrono::steady_clock::now();
 	size_t time_taken = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();

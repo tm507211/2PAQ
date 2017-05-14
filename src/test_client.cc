@@ -41,16 +41,17 @@ int main(int argc, char ** argv){
     cerr << "Usage: " << argv[0] << " <load_balancer_ip> <load_balancer_port>";
     return -1;
   }
-  //  rpc::client load_balancer(argv[1], stoi(argv[2]));
+  rpc::client load_balancer(argv[1], stoi(argv[2]));
 
-  pair<string, size_t> serv = make_pair("localhost", 8080); //load_balancer.call("choose_node", "", 0).as<pair<string, size_t>>();
+  pair<string, size_t> serv = load_balancer.call("choose_node", "", 0).template as<pair<string, size_t>>();
+  cout << serv.first << " " << serv.second << endl;
 
   rpc::client *server = new rpc::client(serv.first, serv.second);
   while (server->get_connection_state() != rpc::client::connection_state::connected);
   
-  double put_percent = 0.1; //load_balancer.call("get_put_percent").as<double>();
-  double rem_percent = 0.2; //load_balancer.call("get_rem_percent").as<double>();
-  size_t data_size = 500; //load_balancer.call("get_size").as<size_t>();
+  double put_percent = load_balancer.call("get_put_percent").template as<double>();
+  double rem_percent = load_balancer.call("get_rem_percent").template as<double>();
+  size_t data_size = load_balancer.call("get_size").template as<size_t>();
 
   random_device rd;
   mt19937 gen(rd());
@@ -65,12 +66,15 @@ int main(int argc, char ** argv){
   size_t time_since(0), time_last(0), time, time_units(1);
   while (1){
     auto start_loop = std::chrono::steady_clock::now();
-    if (server->get_connection_state() != rpc::client::connection_state::connected){
-      std::cout << "HELP" << endl;
+    while (server->get_connection_state() != rpc::client::connection_state::connected){
       delete server;
-      //serv = load_balancer.call("choose_node", serv.first, serv.second).as<pair<string, size_t>>();
+      serv = load_balancer.call("choose_node", serv.first, serv.second).template as<pair<string, size_t>>();
+      cout << serv.first << " " << serv.second << endl;
       server = new rpc::client(serv.first, serv.second);
-      while (server->get_connection_state() != rpc::client::connection_state::connected);
+      size_t loops = 0;
+      while (loops++ <= 10 && server->get_connection_state() != rpc::client::connection_state::connected){
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
     }
     prob = distr(gen);
     if (prob < put_percent){ /* Perform a put operation */
