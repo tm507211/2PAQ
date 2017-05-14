@@ -34,6 +34,15 @@ set_target_properties(
         COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
 target_compile_definitions(test_client PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})
 
+add_executable(load_balance src/load_balancer.cc)
+target_link_libraries(load_balance ${RPCLIB_LIBS} pthread)
+set_target_properties(
+        load_balance
+        PROPERTIES
+        CXX_STANDARD 14
+        COMPILE_FLAGS "${CMAKE_CXX_FLAGS} ${RPCLIB_EXTRA_FLAGS}")
+target_compile_definitions(load_balance PUBLIC ${RPCLIB_COMPILE_DEFINITIONS})
+
 add_executable(main2pc src/main_2pc.cc)
 target_link_libraries(main2pc ${RPCLIB_LIBS} pthread)
 set_target_properties(
