@@ -99,6 +99,16 @@ class Server {
     self_->bind("alive", [this](size_t index){ this->alive(index); });
     self_->bind("check", [this](std::string addr, size_t port){ return this->check(addr, port); });
     self_->bind("ping", [](){});
+    self_->bind("version", [this](std::string key){ return this->version(key); });
+  }
+
+  std::pair<bool, size_t> version(const std::string& key){
+    typename KeyValueStore<std::string, versions_t>::find_t found = kv_.find(key);
+    versions_t vers = versions_t();
+    if (found.found){
+      vers = found.value;
+    }
+    return std::make_pair(vers.valid, vers.current);
   }
 
   T get(const std::string& key){
@@ -114,7 +124,12 @@ class Server {
       return T();
     }
     std::unique_lock<std::mutex> lock(others_mutex_);
-    return others_[0]->call("get", key).template as<T>();
+    std::pair<bool, size_t> version = others_[0]->call("version", key).template as<std::pair<bool, size_t>>();
+    lock.unlock();
+    if (version.first){
+      return queries_[version.second].val;
+    }
+    return T();
   }
 
   void put(const std::string& key, const T& val){
