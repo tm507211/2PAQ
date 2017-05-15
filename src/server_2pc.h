@@ -334,8 +334,8 @@ class Server {
 		std::cout << "REMOVE ";
 	        break;
 	    }
-	    size_t start = std::chrono::duration_cast<std::chrono::nanoseconds>(times_[i].start - BEGINING_OF_TIME).count();
-	    std::cout << start << " " << times_[i].time << std::endl;
+	    double start = 1.0 * std::chrono::duration_cast<std::chrono::nanoseconds>(times_[i].start - BEGINING_OF_TIME).count() / 1000000000; /* 1 second */
+	    std::cout << start << " " << 1.0 * times_[i].time / 1000000 << std::endl;
 	  }
 	  times_.clear();
 	}

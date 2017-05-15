@@ -60,9 +60,7 @@ int main(int argc, char ** argv){
 
   vector<string> keys;
 
-  size_t time_put(0), time_rem(0), time_get(0);
-  size_t num_put(0), num_rem(0), num_get(0);
-  size_t put_min(-1), put_max(0), rem_min(-1), rem_max(0), get_min(-1), get_max(0);
+  size_t time_get(0), num_get(0), get_min(-1), get_max(0);
   size_t time_since(0), time_last(0), time, time_units(1);
   while (1){
     auto start_loop = std::chrono::steady_clock::now();
@@ -78,44 +76,33 @@ int main(int argc, char ** argv){
     }
     prob = distr(gen);
     if (prob < put_percent){ /* Perform a put operation */
-      ++num_put;
-      auto start = std::chrono::steady_clock::now();
       server->call("put", get_key(keys, gen), random_data(data_size, gen));
-      auto end = std::chrono::steady_clock::now();
-      time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-      time_put += time;
-      put_min = (time < put_min) ? time : put_min;
-      put_max = (time > put_max) ? time : put_max;
     } else if(prob - put_percent < rem_percent) { /* Perform a remove operation */
       if (keys.size() == 0) continue;
-      ++num_rem;
-      auto start = std::chrono::steady_clock::now();
       server->call("remove", get_key(keys, gen, true));
-      auto end = std::chrono::steady_clock::now();
-      time += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-      time_rem += time;
-      rem_min = (time < rem_min) ? time : rem_min;
-      rem_max = (time > rem_max) ? time : rem_max;
     } else { /* Perform a get operation */
       ++num_get;
       auto start = std::chrono::steady_clock::now();
-      //server->call("get", get_key(keys, gen)).as<string>();
+      server->call("get", get_key(keys, gen)).as<string>();
       auto end = std::chrono::steady_clock::now();
-      time += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+      time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
       time_get += time;
       get_min = (time < get_min) ? time : get_min;
       get_max = (time > get_max) ? time : get_max;
     }
     auto end_loop = std::chrono::steady_clock::now();
     time_since += std::chrono::duration_cast<std::chrono::nanoseconds>(end_loop - start_loop).count();
-    if (time_since >= time_last + PRINT_TIME){
-      cout << "TIME ELAPSED : " << (time_since - time_last) << endl;
-      cout << "PUT : " << (put_min == -1 ? 0 : put_min) << " " << ((num_put == 0) ? 0 : 1.0 * time_put / num_put) << " " << put_max << " " << 1.0 * SECOND * num_put / (time_put ? time_put : 1) << endl;
-      cout << "REM : " << (rem_min == -1 ? 0 : rem_min) << " " << ((num_rem == 0) ? 0 : 1.0 * time_rem / num_rem) << " " << rem_max << " " << 1.0 * SECOND * num_rem / (time_rem ? time_rem : 1) << endl;
-      cout << "GET : " << (get_min == -1 ? 0 : get_min) << " " << ((num_get == 0) ? 0 : 1.0 * time_get / num_get) << " " << get_max << " " << 1.0 * SECOND * num_get / (time_get ? time_get : 1) << endl;
-      time_put = time_rem = time_get = num_put = num_rem = num_get = 0;
-      put_min = rem_min = get_min = -1;
-      put_max = rem_max = get_max = 0;
+    if (time_since >= time_units * PRINT_TIME){
+      cout << "TIME ELAPSED : " << 1.0 * (time_since - time_last) / SECOND << endl;
+      cout << (get_min == -1 ? 0 : (1.0 * get_min / SECOND * 1000)) << " "
+	   << (num_get ==  0 ? 0 : (1.0 * time_get / num_get / SECOND * 1000))
+	   << " " << 1.0 * get_max / SECOND * 1000 << " "
+	   << 1.0 * SECOND * num_get / (time_get ? time_get : 1) << endl;
+      time_get = num_get = get_max = 0;
+      get_min = -1;
+      while (time_since >= time_units * PRINT_TIME){
+	++time_units;
+      }
       time_last = time_since;
     }
   }

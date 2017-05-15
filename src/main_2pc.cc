@@ -8,7 +8,7 @@
  *************************************************************************************/
 //#include "server_2pc.h"
 //#include "serversion.h" //testAQ
-#include "server_2pc.h"
+#include "server_2paq.h"
 #include <iostream>
 #include <string>
 #include <thread>
