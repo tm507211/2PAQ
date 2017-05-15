@@ -25,6 +25,7 @@
 
 #define PUT 0
 #define REMOVE 1
+#define ALIVE_TIME 5000
 
 std::mutex mtx_lead;
 
@@ -43,15 +44,27 @@ class Server {
   KVStore kv_;
 
   typedef char Action;
+  typedef typename std::chrono::steady_clock::time_point TimeStamp;
+
+  struct CommitResult{
+    CommitResult() {}
+    CommitResult(TimeStamp st, size_t ct, Action a) : time(st),c_time(ct),act(a){}
+    TimeStamp time;
+    size_t c_time;
+    Action act;
+  };
+
+  std::vector<CommitResult> commit_results;
 
   struct Query{
     Query() {}
-    Query(const std::string& k, const T& val, Action act, size_t a = 0, std::vector<bool> a_v ={true}) : key(k), val(val), action(act), acks(a), ack_vec(a_v) {}
+    Query(const std::string& k, const T& val, Action act, TimeStamp t,size_t a = 0, std::vector<bool> a_v ={true}) : key(k), val(val), action(act), time(t), acks(a), ack_vec(a_v) {}
     std::string key;
     T val;
     Action action;
     std::vector<bool> ack_vec;
     size_t acks;    /* If acks == 0 then ready to commit */
+    TimeStamp time;
   };
 
   HashTable<size_t, Query> queries_;
@@ -60,6 +73,7 @@ class Server {
   std::mutex alive_mutex_;
   std::mutex others_mutex_;
   std::mutex queries_mutex_;
+  std::mutex results_mutex_;
 
   void register_funcs(){
     self_.bind("get", [this](std::string key){ return this->get(key); });
@@ -155,7 +169,7 @@ void acknowledge(size_t query, size_t id_no){
         }
         return;
       }
-      queries_.insert(query, Query(key, val, act, others_.size(),std::vector<bool>(others_.size()) ));
+      queries_.insert(query, Query(key, val, act, std::chrono::steady_clock::now(), others_.size(),std::vector<bool>(others_.size()) ));
       add_version(key,query);			
       for (size_t i = 0; i < others_.size(); ++i){
         others_[i]->send("stage", key, val, act, query, i);
@@ -165,7 +179,7 @@ void acknowledge(size_t query, size_t id_no){
       while(!ready_){                                             		//Don't stage acknowledge any stage request till ready
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
       }
-      queries_.insert(query, Query(key, val, act));
+      queries_.insert(query, Query(key, val, act,std::chrono::steady_clock::now()));
       add_version(key,query);				
       others_[0]->send("acknowledge", query, id_no);
     }
@@ -196,6 +210,11 @@ void acknowledge(size_t query, size_t id_no){
       for (size_t i = 0; i < others_.size(); ++i){
 	others_[i]->send("commit", query);
       }
+      auto end = std::chrono::steady_clock::now();
+      CommitResult cr(q.time,std::chrono::duration_cast<std::chrono::nanoseconds>(end - q.time).count(),q.action);
+      std::unique_lock<std::mutex> rlock(results_mutex_);
+      commit_results.push_back(cr);
+      rlock.unlock();
     }
   }
 
@@ -313,9 +332,10 @@ void kill(size_t id_no){
     if (leader == std::make_pair(self_addr, self_port)){
       leader_ = true;
       ready_ =true;
+      auto leader_start = std::chrono::steady_clock::now();
       while(1){
         hello_world();							//sends hello to other nodes
-        std::this_thread::sleep_for (std::chrono::milliseconds(10));
+        std::this_thread::sleep_for (std::chrono::milliseconds(ALIVE_TIME));
 
         /* Checks if others are still alive */
         std::unique_lock<std::mutex> olock(others_mutex_);
@@ -326,8 +346,18 @@ void kill(size_t id_no){
            if(!alive_others_[i]){
              for (qit = queries_.begin(); qit != queries_.end(); ++qit){
                  if( ((*qit).value.ack_vec)[i] == false ){
-                    acknowledge((*qit).key,i);             //send acknowledgement on behalf of dead nodes (not sorted by query no.)
+                   // acknowledge((*qit).key,i);             //send acknowledgement on behalf of dead nodes (not sorted by query no.)
                     //self_c.send("acknowledge",i);   //this will ensure that too many things don't happen in the locked thread
+                    size_t query = (*qit).key;
+                     if(!(queries_[query].ack_vec)[i]){                //no double counting
+                      --queries_[query].acks;
+                     (queries_[query].ack_vec)[i] = true;          //keep track of who acknowledges
+                      if (queries_[query].acks == 0){
+                         std::unique_lock<std::mutex> olock(others_mutex_);
+                         commit(query);
+                      }
+                    }       
+
                  }  
                }
            }     
@@ -343,13 +373,24 @@ void kill(size_t id_no){
            others_.erase(others_.begin() +i);				// Remove dead nodes 
            others_addr_.erase(others_addr_.begin() + i);
         }
-           
+        std::unique_lock<std::mutex> rlock(results_mutex_); 
+/*
+        for(size_t i=0; i<commit_results.size();i++){
+          if(commit_results[i].act == PUT){
+            std::cout<<"PUT ";
+          }
+          else std::cout<<"REMOVE ";
+          std::cout<<std::chrono::duration_cast<std::chrono::nanoseconds>(commit_results[i].time - leader_start).count()<<" "<<commit_results[i].c_time<<" "<<"\n";
+        }   */
+        commit_results.clear();
+        rlock.unlock();
        } 
      } else {
    
       others_.push_back(new rpc::client(leader.first, leader.second));
       
-      while(1){
+      //while(1)
+      {
         ready_ = false;
         std::unique_lock<std::mutex> olock(others_mutex_);
        
@@ -365,7 +406,7 @@ void kill(size_t id_no){
         pulse_ = true;
 	while(pulse_){
           pulse_ = false;
-          std::this_thread::sleep_for (std::chrono::milliseconds(20));
+          std::this_thread::sleep_for (std::chrono::milliseconds(ALIVE_TIME));
         }  
       }
      }
