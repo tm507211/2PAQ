@@ -1,5 +1,5 @@
-# TRAQ
-Tree Replication with Apportioned Queries
+# 2PAQ
+Two Phase commit with Apportioned Queries
 
 ## Required Libraries
 rpclib: http://rpclib.net/
