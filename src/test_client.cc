@@ -25,7 +25,7 @@ string get_key(vector<string>& keys, mt19937& gen, bool old = false){
   double prob(0.05);
   if (keys.size() <= 10){
     prob = 1;
-  } else if (keys.size() == 100 || old){
+  } else if (keys.size() == 10000 || old){
     prob = 0;
   }
   if (distr(gen) < prob){ /* generate new key */
@@ -37,6 +37,7 @@ string get_key(vector<string>& keys, mt19937& gen, bool old = false){
 }
 
 int main(int argc, char ** argv){
+  string rkey;
   if (argc != 3){
     cerr << "Usage: " << argv[0] << " <load_balancer_ip> <load_balancer_port>";
     return -1;
@@ -82,8 +83,9 @@ int main(int argc, char ** argv){
       server->call("remove", get_key(keys, gen, true));
     } else { /* Perform a get operation */
       ++num_get;
+      rkey = get_key(keys, gen);
       auto start = std::chrono::steady_clock::now();
-      server->call("get", get_key(keys, gen)).as<string>();
+      server->call("get", rkey).as<string>();
       auto end = std::chrono::steady_clock::now();
       time = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
       time_get += time;
